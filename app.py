@@ -311,7 +311,7 @@ def create_pm2_config(process_name: str, config: dict) -> str:
     # Format the PM2 config
     pm2_config = {
         "name": process_name,
-        "script": f"~/Python-Reporting-Wrapper/{config['python']['run_script']}",
+        "script": f"/home/pm2/Python-Reporting-Wrapper/{config['python']['run_script']}",
         "args": config.get('python', {}).get('arguments', ''),
         "instances": config.get('pm2', {}).get('instances', 1),
         "exec_mode": config.get('pm2', {}).get('exec_mode', 'fork'),
