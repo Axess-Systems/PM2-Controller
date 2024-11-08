@@ -10,6 +10,8 @@ from datetime import datetime
 from dotenv import load_dotenv
 from typing import Dict, List, Optional, Union
 import time
+from pathlib import Path
+
 
 # Load environment variables
 load_dotenv()
@@ -195,6 +197,36 @@ error_model = api.model('Error', {
     'details': fields.Raw(description='Additional error details')
 })
 
+new_process_model = api.model('NewProcess', {
+    'name': fields.String(required=True, description='Process name'),
+    'script': fields.String(required=True, description='Script path or relative path'),
+    'repository': fields.Nested(api.model('Repository', {
+        'url': fields.String(required=True, description='GitHub repository URL'),
+        'project_dir': fields.String(required=True, description='Project directory name'),
+        'branch': fields.String(required=True, description='Git branch name')
+    })),
+    'python': fields.Nested(api.model('PythonConfig', {
+        'requirements_file': fields.String(description='Path to requirements.txt', default='requirements.txt'),
+        'run_script': fields.String(description='Python script to run', default='app.py'),
+        'arguments': fields.String(description='Additional script arguments', default=''),
+        'variables': fields.Raw(description='Environment variables for Python'),
+        'smtp': fields.Nested(api.model('SMTPConfig', {
+            'enabled': fields.Boolean(description='Enable SMTP', default=False)
+        })),
+        'citrix_customer_api': fields.Nested(api.model('CitrixCustomerAPI', {
+            'enabled': fields.Boolean(description='Enable Citrix Customer API', default=False),
+            'customers': fields.List(fields.String, description='List of customers')
+        }))
+    })),
+    'pm2': fields.Nested(api.model('PM2Config', {
+        'instances': fields.Integer(description='Number of instances', default=1),
+        'exec_mode': fields.String(description='Execution mode', default='fork'),
+        'cron_restart': fields.String(description='Cron pattern for restart'),
+        'watch': fields.Boolean(description='Enable watch mode', default=False),
+        'autorestart': fields.Boolean(description='Enable auto-restart', default=True)
+    }))
+})
+
 def parse_pm2_error(error_message: str) -> Exception:
     """Parse PM2 error messages and return appropriate exception"""
     error_lower = error_message.lower()
@@ -268,6 +300,80 @@ def execute_pm2_command(command: str, retry: bool = True) -> Union[str, dict]:
     
     raise last_error
 
+
+def create_pm2_config(process_name: str, config: dict) -> str:
+    """Create PM2 config file in CommonJS format"""
+    pm2_config_dir = Path('/home/pm2/pm2-configs')
+    pm2_config_dir.mkdir(parents=True, exist_ok=True)
+    
+    config_path = pm2_config_dir / f"{process_name}.config.js"
+    
+    # Format the PM2 config
+    pm2_config = {
+        "name": process_name,
+        "script": f"~/Python-Reporting-Wrapper/{config['python']['run_script']}",
+        "args": config.get('python', {}).get('arguments', ''),
+        "instances": config.get('pm2', {}).get('instances', 1),
+        "exec_mode": config.get('pm2', {}).get('exec_mode', 'fork'),
+        "cron_restart": config.get('pm2', {}).get('cron_restart'),
+        "watch": config.get('pm2', {}).get('watch', False),
+        "autorestart": config.get('pm2', {}).get('autorestart', True)
+    }
+    
+    # Write config in CommonJS format
+    with open(config_path, 'w') as f:
+        f.write("module.exports = {\n")
+        f.write("  apps: [\n")
+        f.write("    " + json.dumps(pm2_config, indent=2).replace('"', "'") + "\n")
+        f.write("  ]\n")
+        f.write("};\n")
+    
+    return str(config_path)
+
+def create_python_config(process_name: str, config: dict) -> str:
+    """Create Python INI config file"""
+    python_config_dir = Path('/home/pm2/Python-Reporting-Wrapper')
+    python_config_dir.mkdir(parents=True, exist_ok=True)
+    
+    config_path = python_config_dir / f"{process_name}.ini"
+    
+    with open(config_path, 'w') as f:
+        # Repository section
+        f.write("[repository]\n")
+        f.write(f"url = {config['repository']['url']}\n")
+        f.write(f"project_dir = {config['repository']['project_dir']}\n")
+        f.write(f"branch = {config['repository']['branch']}\n\n")
+        
+        # Dependencies section
+        f.write("[dependencies]\n")
+        f.write(f"requirements_file = {config['python']['requirements_file']}\n")
+        f.write(f"run_script = {config['python']['run_script']}\n")
+        f.write(f"arguments = {config['python']['arguments']}\n\n")
+        
+        # Variables section if present
+        if 'variables' in config['python']:
+            f.write("[variables]\n")
+            for key, value in config['python']['variables'].items():
+                f.write(f"{key} = {value}\n")
+            f.write("\n")
+        
+        # SMTP section if enabled
+        if config['python'].get('smtp', {}).get('enabled'):
+            f.write("[smtp]\n")
+            f.write("enabled = true\n\n")
+        
+        # Citrix Customer API section if enabled
+        if config['python'].get('citrix_customer_api', {}).get('enabled'):
+            f.write("[citrix_customer_api]\n")
+            f.write("enabled = true\n")
+            customers = config['python']['citrix_customer_api'].get('customers', [])
+            if customers:
+                f.write(f"customers = {', '.join(customers)}\n")
+    
+    return str(config_path)
+
+
+
 @app.route('/')
 def index():
     """Redirect root to Swagger UI"""
@@ -300,6 +406,7 @@ class HealthCheck(Resource):
                 'details': str(e)
             }, 500
 
+
 @processes_ns.route('/')
 class ProcessList(Resource):
     @api.doc(
@@ -310,16 +417,44 @@ class ProcessList(Resource):
     )
     @api.marshal_list_with(process_model)
     def get(self):
-        """Get list of all PM2 processes"""
+        """Get list of all PM2 processes with enhanced details"""
         try:
+            # Get processes list using jlist format
             processes = execute_pm2_command("jlist")
+            
+            # Add additional information for each process
+            for process in processes:
+                try:
+                    # Get config file paths if they exist
+                    pm2_config = Path(f"/home/pm2/pm2-configs/{process['name']}.config.js")
+                    python_config = Path(f"/home/pm2/Python-Reporting-Wrapper/{process['name']}.ini")
+                    
+                    # Add config info to process details if files exist
+                    process['config_files'] = {
+                        'pm2_config': str(pm2_config) if pm2_config.exists() else None,
+                        'python_config': str(python_config) if python_config.exists() else None
+                    }
+                    
+                    # Add any additional process metadata
+                    if process['pm2_env'].get('pm_out_log_path'):
+                        log_path = Path(process['pm2_env']['pm_out_log_path'])
+                        process['log_size'] = log_path.stat().st_size if log_path.exists() else 0
+                        
+                except Exception as e:
+                    logger.warning(f"Error getting additional info for process {process['name']}: {str(e)}")
+                    
             return processes
+            
         except Exception as e:
+            logger.error(f"Error getting process list: {str(e)}")
             return {
                 'error': str(e),
                 'error_type': type(e).__name__,
                 'timestamp': datetime.now().isoformat(),
-                'details': None
+                'details': {
+                    'command': 'pm2 jlist',
+                    'error_details': str(e)
+                }
             }, 500
 
     @api.doc(
@@ -332,57 +467,102 @@ class ProcessList(Resource):
     )
     @api.expect(new_process_model)
     def post(self):
-        """Create a new PM2 process"""
+        """Create a new PM2 process with configuration files"""
         try:
             data = api.payload
-            cmd_parts = [
-                Config.PM2_BIN,
-                'start',
-                data['script'],
-                '--name', data['name']
-            ]
+            process_name = data['name']
             
-            if 'interpreter' in data:
-                cmd_parts.extend(['--interpreter', data['interpreter']])
-            if 'cwd' in data:
-                cmd_parts.extend(['--cwd', data['cwd']])
-            if 'instances' in data:
-                cmd_parts.extend(['-i', str(data['instances'])])
-            if 'watch' in data and data['watch']:
-                cmd_parts.append('--watch')
-            if 'args' in data:
-                cmd_parts.extend(['--', *data['args']])
+            # Check if process already exists
+            existing_processes = execute_pm2_command("jlist")
+            if any(p['name'] == process_name for p in existing_processes):
+                raise ProcessAlreadyExistsError(f"Process {process_name} already exists")
             
-            subprocess.run(cmd_parts, check=True, capture_output=True, text=True)
+            # Create configuration files
+            pm2_config_path = create_pm2_config(process_name, data)
+            python_config_path = create_python_config(process_name, data)
             
-            # Get process details after creation
-            processes = execute_pm2_command("jlist")
-            process = next((p for p in processes if p['name'] == data['name']), None)
+            # Change to PM2 configs directory to start process
+            pm2_configs_dir = Path('/home/pm2/pm2-configs')
+            original_dir = os.getcwd()
             
-            return process, 201
-            
+            try:
+                os.chdir(pm2_configs_dir)
+                
+                # Start the process using PM2 config
+                start_cmd = [
+                    Config.PM2_BIN,
+                    'start',
+                    f"{process_name}.config.js"
+                ]
+                
+                result = subprocess.run(
+                    start_cmd,
+                    check=True,
+                    capture_output=True,
+                    text=True
+                )
+                
+                logger.info(f"Process {process_name} started successfully: {result.stdout}")
+                
+                # Verify process was created and get details
+                processes = execute_pm2_command("jlist")
+                process = next((p for p in processes if p['name'] == process_name), None)
+                
+                if not process:
+                    raise ProcessNotFoundError(f"Process {process_name} was not created successfully")
+                
+                # Add configuration paths to response
+                process['config_files'] = {
+                    'pm2_config': str(pm2_config_path),
+                    'python_config': str(python_config_path)
+                }
+                
+                return process, 201
+                
+            finally:
+                os.chdir(original_dir)
+                
         except ProcessAlreadyExistsError as e:
+            logger.error(f"Process already exists: {str(e)}")
             return {
                 'error': str(e),
                 'error_type': 'ProcessAlreadyExistsError',
                 'timestamp': datetime.now().isoformat(),
-                'details': {'process_name': data['name']}
+                'details': {
+                    'process_name': process_name
+                }
             }, 409
+            
         except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to create process {process_name}: {e.stderr}")
             return {
                 'error': f"Failed to create process: {e.stderr}",
                 'error_type': 'ProcessCreationError',
                 'timestamp': datetime.now().isoformat(),
-                'details': {'command': ' '.join(cmd_parts)}
+                'details': {
+                    'command': ' '.join(start_cmd),
+                    'stdout': e.stdout,
+                    'stderr': e.stderr,
+                    'exit_code': e.returncode
+                }
             }, 500
+            
         except Exception as e:
+            logger.error(f"Unexpected error creating process {process_name}: {str(e)}")
             return {
                 'error': str(e),
                 'error_type': type(e).__name__,
                 'timestamp': datetime.now().isoformat(),
-                'details': None
+                'details': {
+                    'process_name': process_name,
+                    'config_paths': {
+                        'pm2': str(pm2_config_path) if 'pm2_config_path' in locals() else None,
+                        'python': str(python_config_path) if 'python_config_path' in locals() else None
+                    }
+                }
             }, 500
-
+            
+            
 @processes_ns.route('/<string:process_name>')
 @api.doc(params={'process_name': 'Name of the PM2 process'})
 class Process(Resource):
