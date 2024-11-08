@@ -411,6 +411,46 @@ class HealthCheck(Resource):
 class ProcessList(Resource):
     @api.doc(
         responses={
+            200: ('Success', [process_model]),
+            500: ('Internal server error', error_model)
+        }
+    )
+    @api.marshal_list_with(process_model)
+    def get(self):
+        """Get list of all PM2 processes"""
+        try:
+            processes = execute_pm2_command("jlist")
+            
+            # Add config file paths to process details
+            for process in processes:
+                try:
+                    # Get config file paths
+                    pm2_config = Path(f"/home/pm2/pm2-configs/{process['name']}.config.js")
+                    python_config = Path(f"/home/pm2/Python-Reporting-Wrapper/{process['name']}.ini")
+                    
+                    process['config_files'] = {
+                        'pm2_config': str(pm2_config) if pm2_config.exists() else None,
+                        'python_config': str(python_config) if python_config.exists() else None
+                    }
+                except Exception as e:
+                    logger.warning(f"Error getting config paths for process {process['name']}: {str(e)}")
+            
+            return processes
+            
+        except Exception as e:
+            logger.error(f"Error getting process list: {str(e)}")
+            return {
+                'error': str(e),
+                'error_type': type(e).__name__,
+                'timestamp': datetime.now().isoformat(),
+                'details': {
+                    'command': 'pm2 jlist',
+                    'error_details': str(e)
+                }
+            }, 500
+
+    @api.doc(
+        responses={
             201: ('Process created', process_model),
             400: ('Invalid input', error_model),
             409: ('Process already exists', error_model),
@@ -429,7 +469,7 @@ class ProcessList(Resource):
             if any(p['name'] == process_name for p in existing_processes):
                 raise ProcessAlreadyExistsError(f"Process {process_name} already exists")
             
-            # Create configs directory if it doesn't exist
+            # Create directories if they don't exist
             pm2_configs_dir = Path('/home/pm2/pm2-configs')
             python_wrapper_dir = Path('/home/pm2/Python-Reporting-Wrapper')
             pm2_configs_dir.mkdir(parents=True, exist_ok=True)
@@ -439,15 +479,16 @@ class ProcessList(Resource):
             pm2_config_path = pm2_configs_dir / f"{process_name}.config.js"
             pm2_config = {
                 "name": process_name,
-                "script": "~/Python-Reporting-Wrapper/app.py",  # Use relative path
+                "script": "~/Python-Reporting-Wrapper/app.py",
                 "args": f"{process_name}.ini",
                 "instances": data.get('pm2', {}).get('instances', 1),
-                "exec_mode": data.get('pm2', {}).get('exec_mode', 'fork'),
+                "exec_mode": 'fork',
                 "cron_restart": data.get('pm2', {}).get('cron_restart'),
                 "watch": data.get('pm2', {}).get('watch', False),
                 "autorestart": data.get('pm2', {}).get('autorestart', True)
             }
             
+            # Write PM2 config
             with open(pm2_config_path, 'w') as f:
                 f.write("module.exports = {\n")
                 f.write("  apps: [\n")
@@ -492,8 +533,10 @@ class ProcessList(Resource):
             original_dir = os.getcwd()
             try:
                 os.chdir(pm2_configs_dir)
+                start_cmd = [Config.PM2_BIN, 'start', f"{process_name}.config.js"]
+                
                 subprocess.run(
-                    [Config.PM2_BIN, 'start', f"{process_name}.config.js"],
+                    start_cmd,
                     check=True,
                     capture_output=True,
                     text=True
@@ -509,27 +552,47 @@ class ProcessList(Resource):
                 
             finally:
                 os.chdir(original_dir)
+                
+        except ProcessAlreadyExistsError as e:
+            logger.error(f"Process already exists: {str(e)}")
+            return {
+                'error': str(e),
+                'error_type': 'ProcessAlreadyExistsError',
+                'timestamp': datetime.now().isoformat(),
+                'details': {
+                    'process_name': process_name
+                }
+            }, 409
             
         except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to create process {process_name}: {e.stderr}")
             return {
                 'error': f"Failed to create process: {e.stderr}",
                 'error_type': 'ProcessCreationError',
                 'timestamp': datetime.now().isoformat(),
                 'details': {
-                    'command': f"pm2 start {process_name}.config.js",
+                    'command': ' '.join(start_cmd),
                     'stdout': e.stdout,
                     'stderr': e.stderr,
                     'exit_code': e.returncode
                 }
             }, 500
+            
         except Exception as e:
+            logger.error(f"Unexpected error creating process {process_name}: {str(e)}")
             return {
                 'error': str(e),
                 'error_type': type(e).__name__,
                 'timestamp': datetime.now().isoformat(),
-                'details': None
+                'details': {
+                    'process_name': process_name,
+                    'config_paths': {
+                        'pm2': str(pm2_config_path) if 'pm2_config_path' in locals() else None,
+                        'python': str(python_config_path) if 'python_config_path' in locals() else None
+                    }
+                }
             }, 500
-                       
+                      
             
 @processes_ns.route('/<string:process_name>')
 @api.doc(params={'process_name': 'Name of the PM2 process'})
