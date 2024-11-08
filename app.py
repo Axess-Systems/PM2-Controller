@@ -642,14 +642,19 @@ class ProcessConfig(Resource):
     def get(self, process_name):
         """Get configuration files for a process"""
         try:
+            # Get config file paths
+            pm2_config_path = Path(f"/home/pm2/pm2-configs/{process_name}.config.js")
+            python_config_path = Path(f"/home/pm2/Python-Reporting-Wrapper/{process_name}.ini")
+
             # Check process exists
             processes = execute_pm2_command("jlist")
             if not any(p['name'] == process_name for p in processes):
-                raise ProcessNotFoundError(f"Process {process_name} not found")
-
-            # Get config file paths
-            pm2_config_path = Path(f"/home/pm2/pm2-configs/{process_name}.config.js")
-            python_config_path = Path(f"/home/pm2/pm2-configs/{process_name}.ini")
+                raise ProcessNotFoundError(
+                    f"Process {process_name} not found in PM2 process list. "
+                    f"Checked config paths:\n"
+                    f"PM2 Config: {pm2_config_path} (exists: {pm2_config_path.exists()})\n"
+                    f"Python Config: {python_config_path} (exists: {python_config_path.exists()})"
+                )
 
             configs = {}
 
@@ -663,6 +668,12 @@ class ProcessConfig(Resource):
                         # Parse the JSON portion
                         config_str = match.group(1).replace("'", '"')
                         configs['pm2_config'] = json.loads(config_str)
+                    else:
+                        configs['pm2_config'] = None
+                        logger.warning(f"Could not parse PM2 config from {pm2_config_path}")
+            else:
+                configs['pm2_config'] = None
+                logger.warning(f"PM2 config file not found at {pm2_config_path}")
 
             # Read Python INI if exists
             if python_config_path.exists():
@@ -671,15 +682,61 @@ class ProcessConfig(Resource):
                 config.read(python_config_path)
                 configs['python_config'] = {section: dict(config[section]) 
                                          for section in config.sections()}
+            else:
+                configs['python_config'] = None
+                logger.warning(f"Python config file not found at {python_config_path}")
+
+            # If neither config exists, raise an error
+            if configs['pm2_config'] is None and configs['python_config'] is None:
+                raise FileNotFoundError(
+                    f"No configuration files found for process {process_name}. "
+                    f"Checked paths:\n"
+                    f"PM2 Config: {pm2_config_path}\n"
+                    f"Python Config: {python_config_path}"
+                )
 
             return configs
 
         except ProcessNotFoundError as e:
+            logger.error(f"Process not found error: {str(e)}")
             return {
                 'error': str(e),
                 'error_type': 'ProcessNotFoundError',
                 'timestamp': datetime.now().isoformat(),
-                'details': {'process_name': process_name}
+                'details': {
+                    'process_name': process_name,
+                    'pm2_processes': [p['name'] for p in processes],
+                    'config_paths': {
+                        'pm2_config': {
+                            'path': str(pm2_config_path),
+                            'exists': pm2_config_path.exists()
+                        },
+                        'python_config': {
+                            'path': str(python_config_path),
+                            'exists': python_config_path.exists()
+                        }
+                    }
+                }
+            }, 404
+        except FileNotFoundError as e:
+            logger.error(f"Config files not found: {str(e)}")
+            return {
+                'error': str(e),
+                'error_type': 'FileNotFoundError',
+                'timestamp': datetime.now().isoformat(),
+                'details': {
+                    'process_name': process_name,
+                    'config_paths': {
+                        'pm2_config': {
+                            'path': str(pm2_config_path),
+                            'exists': pm2_config_path.exists()
+                        },
+                        'python_config': {
+                            'path': str(python_config_path),
+                            'exists': python_config_path.exists()
+                        }
+                    }
+                }
             }, 404
         except Exception as e:
             logger.error(f"Error retrieving configs for {process_name}: {str(e)}")
@@ -687,7 +744,20 @@ class ProcessConfig(Resource):
                 'error': str(e),
                 'error_type': type(e).__name__,
                 'timestamp': datetime.now().isoformat(),
-                'details': None
+                'details': {
+                    'process_name': process_name,
+                    'config_paths': {
+                        'pm2_config': {
+                            'path': str(pm2_config_path),
+                            'exists': pm2_config_path.exists() if 'pm2_config_path' in locals() else None
+                        },
+                        'python_config': {
+                            'path': str(python_config_path),
+                            'exists': python_config_path.exists() if 'python_config_path' in locals() else None
+                        }
+                    },
+                    'error_details': str(e)
+                }
             }, 500
 
     @api.doc(
