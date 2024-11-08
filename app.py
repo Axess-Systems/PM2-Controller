@@ -600,7 +600,7 @@ class ProcessList(Resource):
                 }
             }, 500
             
- @processes_ns.route('/<string:process_name>/config')
+@processes_ns.route('/<string:process_name>/config')
 @api.doc(params={'process_name': 'Name of the PM2 process'})
 class ProcessConfig(Resource):
     # Models for config updates
