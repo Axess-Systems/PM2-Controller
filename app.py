@@ -13,7 +13,7 @@ import time
 
 # Load environment variables
 load_dotenv()
-CORS(app)
+
 # Configuration
 class Config:
     PORT = int(os.getenv('PORT', 5000))
@@ -77,7 +77,7 @@ api = Api(app,
     doc='/',
     prefix='/api'
 )
-
+CORS(app)
 # Define namespaces
 health_ns = api.namespace('health', description='Health checks')
 processes_ns = api.namespace('processes', description='PM2 process operations')
