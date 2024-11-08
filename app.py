@@ -479,7 +479,7 @@ class ProcessList(Resource):
             pm2_config_path = pm2_configs_dir / f"{process_name}.config.js"
             pm2_config = {
                 "name": process_name,
-                "script": "/home/pm2/Python-Reporting-Wrapper/app.py",
+                "script": "app.py",  # Using relative path since we'll be in Python-Reporting-Wrapper
                 "args": f"{process_name}.ini",
                 "instances": data.get('pm2', {}).get('instances', 1),
                 "exec_mode": 'fork',
@@ -529,11 +529,18 @@ class ProcessList(Resource):
                     if customers:
                         f.write(f"customers = {', '.join(customers)}\n")
             
-            # Start the process from pm2-configs directory
+            # Start the process from Python-Reporting-Wrapper directory
             original_dir = os.getcwd()
             try:
-                os.chdir(pm2_configs_dir)
-                start_cmd = [Config.PM2_BIN, 'start', f"{process_name}.config.js"]
+                # Change to Python-Reporting-Wrapper directory
+                os.chdir(python_wrapper_dir)
+                
+                # Start PM2 with full path to config
+                start_cmd = [
+                    Config.PM2_BIN,
+                    'start',
+                    f"/home/pm2/pm2-configs/{process_name}.config.js"
+                ]
                 
                 subprocess.run(
                     start_cmd,
@@ -592,7 +599,9 @@ class ProcessList(Resource):
                     }
                 }
             }, 500
-                      
+            
+            
+                                 
             
 @processes_ns.route('/<string:process_name>')
 @api.doc(params={'process_name': 'Name of the PM2 process'})
