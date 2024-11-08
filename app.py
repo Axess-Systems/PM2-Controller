@@ -518,72 +518,22 @@ class ProcessLogs(Resource):
             200: 'Success',
             404: ('Process not found', error_model),
             500: ('Internal server error', error_model)
-        },
-        params={
-            'lines': {'type': 'integer', 'default': 100, 'description': 'Number of log lines to return'},
-            'format': {'type': 'string', 'enum': ['raw', 'json'], 'default': 'raw', 'description': 'Log format'}
         }
     )
     def get(self, process_name):
-        """Get logs for a specific process"""
+        """Get process details for a specific process"""
         try:
-            from flask import request
-            lines = min(int(request.args.get('lines', 100)), Config.MAX_LOG_LINES)
-            format_type = request.args.get('format', 'raw')
-
-            # First verify process exists
+            # Get all processes data
             processes = execute_pm2_command("jlist")
+            
+            # Find the specific process
             process = next((p for p in processes if p['name'] == process_name), None)
             
             if not process:
                 raise ProcessNotFoundError(f"Process {process_name} not found")
 
-            logs = execute_pm2_command(f"logs {process_name} --lines {lines} --nostream")
-            
-            if format_type == 'json':
-                # Parse logs into structured format
-                log_entries = []
-                for line in logs.splitlines():
-                    if line.strip():
-                        try:
-                            timestamp = None
-                            message = line
-                            
-                            # Try to extract timestamp if present
-                            if ' -- ' in line:
-                                parts = line.split(' -- ', 1)
-                                try:
-                                    timestamp = datetime.strptime(
-                                        parts[0].strip(), 
-                                        '%Y-%m-%d %H:%M:%S'
-                                    ).isoformat()
-                                    message = parts[1]
-                                except ValueError:
-                                    pass
-                            
-                            log_entries.append({
-                                'timestamp': timestamp,
-                                'message': message.strip(),
-                                'type': 'error' if 'error' in line.lower() else 'out'
-                            })
-                        except Exception as e:
-                            logger.warning(f"Failed to parse log line: {line}")
-                            log_entries.append({
-                                'timestamp': None,
-                                'message': line.strip(),
-                                'type': 'unknown'
-                            })
-                
-                return {
-                    'process_name': process_name,
-                    'total_lines': len(log_entries),
-                    'logs': log_entries
-                }
-            else:
-                return {
-                    'process_name': process_name,
-                    'logs': logs
-                }
+            # Return the complete process data
+            return jsonify(process)
                 
         except ProcessNotFoundError as e:
             return {
@@ -592,13 +542,6 @@ class ProcessLogs(Resource):
                 'timestamp': datetime.now().isoformat(),
                 'details': {'process_name': process_name}
             }, 404
-        except ValueError as e:
-            return {
-                'error': 'Invalid parameter value',
-                'error_type': 'ValueError',
-                'timestamp': datetime.now().isoformat(),
-                'details': str(e)
-            }, 400
         except Exception as e:
             return {
                 'error': str(e),
@@ -606,7 +549,7 @@ class ProcessLogs(Resource):
                 'timestamp': datetime.now().isoformat(),
                 'details': None
             }, 500
-
+            
 @processes_ns.route('/<string:process_name>/reload')
 class ProcessReload(Resource):
     @api.doc(
