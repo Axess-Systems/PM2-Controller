@@ -479,7 +479,7 @@ class ProcessList(Resource):
             pm2_config_path = pm2_configs_dir / f"{process_name}.config.js"
             pm2_config = {
                 "name": process_name,
-                "script": "~/Python-Reporting-Wrapper/app.py",
+                "script": "/home/pm2/Python-Reporting-Wrapper/app.py",
                 "args": f"{process_name}.ini",
                 "instances": data.get('pm2', {}).get('instances', 1),
                 "exec_mode": 'fork',
