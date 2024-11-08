@@ -83,70 +83,111 @@ health_ns = api.namespace('health', description='Health checks')
 processes_ns = api.namespace('processes', description='PM2 process operations')
 logs_ns = api.namespace('logs', description='Process logs operations')
 
-# Model definitions
+# Base environment variables that every process has
+base_env_model = api.model('BaseEnvironment', {
+    'NODE_APP_INSTANCE': fields.Integer(description='Node app instance'),
+    'PM2_HOME': fields.String(description='PM2 home directory'),
+    'PYTHONUNBUFFERED': fields.String(description='Python unbuffered mode'),
+    'unique_id': fields.String(description='Unique process ID'),
+    'USER': fields.String(description='Username'),
+    'HOME': fields.String(description='Home directory'),
+    'SHELL': fields.String(description='Shell'),
+    'PATH': fields.String(description='System PATH'),
+    'PWD': fields.String(description='Working directory'),
+    'LANG': fields.String(description='System language'),
+    'XDG_SESSION_TYPE': fields.String(description='Session type'),
+    'TERM': fields.String(description='Terminal type')
+})
+
+# Model for process monitoring stats
 monit_model = api.model('Monitoring', {
     'memory': fields.Integer(description='Memory usage in bytes'),
     'cpu': fields.Float(description='CPU usage percentage')
 })
 
-env_model = api.model('Environment', {
-    'NODE_APP_INSTANCE': fields.Integer(description='Node app instance'),
-    'PM2_HOME': fields.String(description='PM2 home directory'),
-    'PYTHONUNBUFFERED': fields.String(description='Python unbuffered mode'),
-    'unique_id': fields.String(description='Unique process ID'),
-    'status': fields.String(description='Process status'),
-    'pm_uptime': fields.Integer(description='Process uptime'),
-    'restart_time': fields.Integer(description='Number of restarts'),
-    'exit_code': fields.Integer(description='Process exit code')
-})
-
+# Extended PM2 environment configuration
 pm2_env_model = api.model('PM2Environment', {
-    'filter_env': fields.List(fields.String, description='Filtered environment variables'),
-    'merge_logs': fields.Boolean(description='Merge logs flag'),
-    'prev_restart_delay': fields.Integer(description='Previous restart delay'),
-    'namespace': fields.String(description='Process namespace'),
-    'kill_retry_time': fields.Integer(description='Kill retry timeout'),
-    'windowsHide': fields.Boolean(description='Windows hide flag'),
-    'username': fields.String(description='Process username'),
-    'treekill': fields.Boolean(description='Tree kill flag'),
-    'automation': fields.Boolean(description='Automation flag'),
-    'pmx': fields.Boolean(description='PMX flag'),
-    'instance_var': fields.String(description='Instance variable'),
-    'exec_mode': fields.String(description='Execution mode'),
-    'watch': fields.Boolean(description='Watch mode'),
-    'autorestart': fields.Boolean(description='Auto restart flag'),
-    'autostart': fields.Boolean(description='Auto start flag'),
-    'vizion': fields.Boolean(description='Vizion flag'),
-    'instances': fields.Integer(description='Number of instances'),
-    'args': fields.List(fields.String, description='Process arguments'),
-    'pm_exec_path': fields.String(description='Executable path'),
+    # Process Configuration
+    'name': fields.String(description='Process name'),
+    'namespace': fields.String(description='Process namespace', default='default'),
+    'version': fields.String(description='Application version', default='N/A'),
+    'instances': fields.Integer(description='Number of instances', default=1),
+    
+    # Execution Settings
+    'exec_interpreter': fields.String(description='Script interpreter'),
+    'pm_exec_path': fields.String(description='Script path'),
     'pm_cwd': fields.String(description='Working directory'),
-    'exec_interpreter': fields.String(description='Interpreter'),
+    'args': fields.List(fields.String, description='Script arguments'),
+    'node_args': fields.List(fields.String, description='Node.js arguments'),
+    
+    # Runtime Configuration
+    'watch': fields.Boolean(description='Watch mode', default=False),
+    'autorestart': fields.Boolean(description='Auto restart flag', default=True),
+    'autostart': fields.Boolean(description='Auto start flag', default=True),
+    'vizion': fields.Boolean(description='Version control tracking', default=True),
+    'automation': fields.Boolean(description='Automation enabled', default=True),
+    'pmx': fields.Boolean(description='PMX monitoring', default=True),
+    'treekill': fields.Boolean(description='Kill process tree', default=True),
+    'windowsHide': fields.Boolean(description='Hide window on Windows', default=True),
+    
+    # Paths and Logs
     'pm_out_log_path': fields.String(description='Output log path'),
     'pm_err_log_path': fields.String(description='Error log path'),
     'pm_pid_path': fields.String(description='PID file path'),
-    'env': fields.Nested(env_model)
+    'merge_logs': fields.Boolean(description='Merge logs flag', default=True),
+    
+    # Process State
+    'status': fields.String(description='Process status', 
+        enum=['online', 'stopping', 'stopped', 'launching', 'errored', 'one-launch-status']),
+    'pm_uptime': fields.Integer(description='Process uptime'),
+    'created_at': fields.Integer(description='Creation timestamp'),
+    'pm_id': fields.Integer(description='PM2 process ID'),
+    'restart_time': fields.Integer(description='Number of restarts', default=0),
+    'unstable_restarts': fields.Integer(description='Number of unstable restarts', default=0),
+    'exit_code': fields.Integer(description='Exit code'),
+    
+    # Control Settings
+    'kill_retry_time': fields.Integer(description='Kill retry timeout', default=100),
+    'prev_restart_delay': fields.Integer(description='Previous restart delay', default=0),
+    'instance_var': fields.String(description='Instance variable', default='NODE_APP_INSTANCE'),
+    
+    # Environment
+    'filter_env': fields.List(fields.String, description='Filtered environment variables'),
+    'env': fields.Nested(base_env_model, description='Environment variables'),
+    
+    # Monitoring
+    'axm_actions': fields.List(fields.Raw, description='PM2 module actions'),
+    'axm_monitor': fields.Raw(description='Custom metrics'),
+    'axm_options': fields.Raw(description='Module options'),
+    'axm_dynamic': fields.Raw(description='Dynamic configuration')
 })
 
+# Main process model
 process_model = api.model('Process', {
     'pid': fields.Integer(description='Process ID'),
     'name': fields.String(description='Process name'),
-    'pm2_env': fields.Nested(pm2_env_model),
+    'pm2_env': fields.Nested(pm2_env_model, description='PM2 environment configuration'),
     'pm_id': fields.Integer(description='PM2 ID'),
-    'monit': fields.Nested(monit_model)
+    'monit': fields.Nested(monit_model, description='Process monitoring statistics')
 })
 
+# Model for creating new processes
 new_process_model = api.model('NewProcess', {
     'name': fields.String(required=True, description='Process name'),
     'script': fields.String(required=True, description='Script path'),
-    'interpreter': fields.String(description='Python interpreter path'),
+    'interpreter': fields.String(description='Script interpreter', default='python3'),
     'cwd': fields.String(description='Working directory'),
     'args': fields.List(fields.String, description='Script arguments'),
-    'autorestart': fields.Boolean(description='Auto restart flag'),
-    'watch': fields.Boolean(description='Watch mode flag'),
-    'instances': fields.Integer(description='Number of instances')
+    'env': fields.Raw(description='Environment variables'),
+    'instances': fields.Integer(description='Number of instances', default=1),
+    'autorestart': fields.Boolean(description='Auto restart flag', default=True),
+    'watch': fields.Boolean(description='Watch mode', default=False),
+    'merge_logs': fields.Boolean(description='Merge logs', default=True),
+    'cron_restart': fields.String(description='Cron pattern for automatic restart'),
+    'max_memory_restart': fields.String(description='Max memory before restart'),
 })
 
+# Error response model
 error_model = api.model('Error', {
     'error': fields.String(description='Error message'),
     'error_type': fields.String(description='Error type'),
