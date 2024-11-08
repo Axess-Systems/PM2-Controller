@@ -414,10 +414,16 @@ class ProcessRestart(Resource):
         }
     )
     def post(self, process_name):
-        """Restart a specific process"""
+        """Restart a specific process by name, using pm_id"""
         try:
-            execute_pm2_command(f"restart {process_name}")
-            return {"message": f"Process {process_name} restarted successfully"}
+            processes = execute_pm2_command("jlist")
+            process = next((p for p in processes if p['name'] == process_name), None)
+            if not process:
+                raise ProcessNotFoundError(f"Process {process_name} not found")
+            
+            pm_id = process['pm_id']
+            execute_pm2_command(f"restart {pm_id}")
+            return {"message": f"Process {process_name} (ID: {pm_id}) restarted successfully"}
         except ProcessNotFoundError as e:
             return {
                 'error': str(e),
@@ -443,10 +449,51 @@ class ProcessStop(Resource):
         }
     )
     def post(self, process_name):
-        """Stop a specific process"""
+        """Stop a specific process by name, using pm_id"""
         try:
-            execute_pm2_command(f"stop {process_name}")
-            return {"message": f"Process {process_name} stopped successfully"}
+            processes = execute_pm2_command("jlist")
+            process = next((p for p in processes if p['name'] == process_name), None)
+            if not process:
+                raise ProcessNotFoundError(f"Process {process_name} not found")
+            
+            pm_id = process['pm_id']
+            execute_pm2_command(f"stop {pm_id}")
+            return {"message": f"Process {process_name} (ID: {pm_id}) stopped successfully"}
+        except ProcessNotFoundError as e:
+            return {
+                'error': str(e),
+                'error_type': 'ProcessNotFoundError',
+                'timestamp': datetime.now().isoformat(),
+                'details': {'process_name': process_name}
+            }, 404
+        except Exception as e:
+            return {
+                'error': str(e),
+                'error_type': type(e).__name__,
+                'timestamp': datetime.now().isoformat(),
+                'details': None
+            }, 500
+            
+@processes_ns.route('/<string:process_name>/start')
+class ProcessStart(Resource):
+    @api.doc(
+        responses={
+            200: 'Process started',
+            404: ('Process not found', error_model),
+            500: ('Internal server error', error_model)
+        }
+    )
+    def post(self, process_name):
+        """Start a specific process by name, using pm_id"""
+        try:
+            processes = execute_pm2_command("jlist")
+            process = next((p for p in processes if p['name'] == process_name), None)
+            if not process:
+                raise ProcessNotFoundError(f"Process {process_name} not found")
+            
+            pm_id = process['pm_id']
+            execute_pm2_command(f"start {pm_id}")
+            return {"message": f"Process {process_name} (ID: {pm_id}) started successfully"}
         except ProcessNotFoundError as e:
             return {
                 'error': str(e),
@@ -462,34 +509,6 @@ class ProcessStop(Resource):
                 'details': None
             }, 500
 
-@processes_ns.route('/<string:process_name>/start')
-class ProcessStart(Resource):
-    @api.doc(
-        responses={
-            200: 'Process started',
-            404: ('Process not found', error_model),
-            500: ('Internal server error', error_model)
-        }
-    )
-    def post(self, process_name):
-        """Start a specific process"""
-        try:
-            execute_pm2_command(f"start {process_name}")
-            return {"message": f"Process {process_name} started successfully"}
-        except ProcessNotFoundError as e:
-            return {
-                'error': str(e),
-                'error_type': 'ProcessNotFoundError',
-                'timestamp': datetime.now().isoformat(),
-                'details': {'process_name': process_name}
-            }, 404
-        except Exception as e:
-            return {
-                'error': str(e),
-                'error_type': type(e).__name__,
-                'timestamp': datetime.now().isoformat(),
-                'details': None
-            }, 500
 
 @logs_ns.route('/<string:process_name>')
 class ProcessLogs(Resource):
