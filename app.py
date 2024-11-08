@@ -600,7 +600,210 @@ class ProcessList(Resource):
                 }
             }, 500
             
+ @processes_ns.route('/<string:process_name>/config')
+@api.doc(params={'process_name': 'Name of the PM2 process'})
+class ProcessConfig(Resource):
+    # Models for config updates
+    pm2_config_update = api.model('PM2ConfigUpdate', {
+        'instances': fields.Integer(description='Number of instances'),
+        'cron_restart': fields.String(description='Cron pattern for restart'),
+        'watch': fields.Boolean(description='Enable watch mode'),
+        'autorestart': fields.Boolean(description='Enable auto-restart')
+    })
+
+    python_config_update = api.model('PythonConfigUpdate', {
+        'repository': fields.Nested(api.model('RepositoryUpdate', {
+            'url': fields.String(description='GitHub repository URL'),
+            'project_dir': fields.String(description='Project directory name'),
+            'branch': fields.String(description='Git branch name')
+        })),
+        'dependencies': fields.Nested(api.model('DependenciesUpdate', {
+            'requirements_file': fields.String(description='Path to requirements.txt'),
+            'run_script': fields.String(description='Python script to run'),
+            'arguments': fields.String(description='Additional script arguments')
+        })),
+        'variables': fields.Raw(description='Environment variables'),
+        'smtp': fields.Nested(api.model('SMTPUpdate', {
+            'enabled': fields.Boolean(description='Enable SMTP')
+        })),
+        'citrix_customer_api': fields.Nested(api.model('CitrixCustomerAPIUpdate', {
+            'enabled': fields.Boolean(description='Enable Citrix Customer API'),
+            'customers': fields.List(fields.String, description='List of customers')
+        }))
+    })
+
+    @api.doc(
+        responses={
+            200: 'Config files retrieved successfully',
+            404: ('Process not found', error_model),
+            500: ('Internal server error', error_model)
+        }
+    )
+    def get(self, process_name):
+        """Get configuration files for a process"""
+        try:
+            # Check process exists
+            processes = execute_pm2_command("jlist")
+            if not any(p['name'] == process_name for p in processes):
+                raise ProcessNotFoundError(f"Process {process_name} not found")
+
+            # Get config file paths
+            pm2_config_path = Path(f"/home/pm2/pm2-configs/{process_name}.config.js")
+            python_config_path = Path(f"/home/pm2/Python-Reporting-Wrapper/{process_name}.ini")
+
+            configs = {}
+
+            # Read PM2 config if exists
+            if pm2_config_path.exists():
+                with open(pm2_config_path, 'r') as f:
+                    content = f.read()
+                    # Extract JSON from module.exports
+                    match = re.search(r'apps:\s*\[\s*({[^}]+})', content, re.DOTALL)
+                    if match:
+                        # Parse the JSON portion
+                        config_str = match.group(1).replace("'", '"')
+                        configs['pm2_config'] = json.loads(config_str)
+
+            # Read Python INI if exists
+            if python_config_path.exists():
+                import configparser
+                config = configparser.ConfigParser()
+                config.read(python_config_path)
+                configs['python_config'] = {section: dict(config[section]) 
+                                         for section in config.sections()}
+
+            return configs
+
+        except ProcessNotFoundError as e:
+            return {
+                'error': str(e),
+                'error_type': 'ProcessNotFoundError',
+                'timestamp': datetime.now().isoformat(),
+                'details': {'process_name': process_name}
+            }, 404
+        except Exception as e:
+            logger.error(f"Error retrieving configs for {process_name}: {str(e)}")
+            return {
+                'error': str(e),
+                'error_type': type(e).__name__,
+                'timestamp': datetime.now().isoformat(),
+                'details': None
+            }, 500
+
+    @api.doc(
+        responses={
+            200: 'Config updated successfully',
+            404: ('Process or config not found', error_model),
+            500: ('Internal server error', error_model)
+        }
+    )
+    @api.expect(api.model('ConfigUpdate', {
+        'pm2_config': fields.Nested(pm2_config_update),
+        'python_config': fields.Nested(python_config_update)
+    }))
+    def put(self, process_name):
+        """Update configuration files for a process"""
+        try:
+            data = api.payload
             
+            # Check process exists
+            processes = execute_pm2_command("jlist")
+            if not any(p['name'] == process_name for p in processes):
+                raise ProcessNotFoundError(f"Process {process_name} not found")
+
+            pm2_config_path = Path(f"/home/pm2/pm2-configs/{process_name}.config.js")
+            python_config_path = Path(f"/home/pm2/Python-Reporting-Wrapper/{process_name}.ini")
+
+            # Update PM2 config if provided
+            if 'pm2_config' in data and pm2_config_path.exists():
+                with open(pm2_config_path, 'r') as f:
+                    content = f.read()
+                    match = re.search(r'apps:\s*\[\s*({[^}]+})', content, re.DOTALL)
+                    if match:
+                        config_str = match.group(1).replace("'", '"')
+                        current_config = json.loads(config_str)
+                        # Update only provided fields
+                        current_config.update(data['pm2_config'])
+                        
+                        # Write updated config
+                        with open(pm2_config_path, 'w') as f:
+                            f.write("module.exports = {\n")
+                            f.write("  apps: [\n")
+                            f.write("    " + json.dumps(current_config, indent=2).replace('"', "'") + "\n")
+                            f.write("  ]\n")
+                            f.write("};\n")
+
+            # Update Python INI if provided
+            if 'python_config' in data and python_config_path.exists():
+                import configparser
+                config = configparser.ConfigParser()
+                config.read(python_config_path)
+
+                # Update repository section
+                if 'repository' in data['python_config']:
+                    for key, value in data['python_config']['repository'].items():
+                        config.set('repository', key, str(value))
+
+                # Update dependencies section
+                if 'dependencies' in data['python_config']:
+                    for key, value in data['python_config']['dependencies'].items():
+                        config.set('dependencies', key, str(value))
+
+                # Update variables section
+                if 'variables' in data['python_config']:
+                    if not config.has_section('variables'):
+                        config.add_section('variables')
+                    for key, value in data['python_config']['variables'].items():
+                        config.set('variables', key, str(value))
+
+                # Update SMTP section
+                if 'smtp' in data['python_config']:
+                    if not config.has_section('smtp'):
+                        config.add_section('smtp')
+                    config.set('smtp', 'enabled', 
+                             str(data['python_config']['smtp']['enabled']).lower())
+
+                # Update Citrix Customer API section
+                if 'citrix_customer_api' in data['python_config']:
+                    if not config.has_section('citrix_customer_api'):
+                        config.add_section('citrix_customer_api')
+                    config.set('citrix_customer_api', 'enabled', 
+                             str(data['python_config']['citrix_customer_api']['enabled']).lower())
+                    if 'customers' in data['python_config']['citrix_customer_api']:
+                        customers = data['python_config']['citrix_customer_api']['customers']
+                        config.set('citrix_customer_api', 'customers', ', '.join(customers))
+
+                # Write updated config
+                with open(python_config_path, 'w') as f:
+                    config.write(f)
+
+            # Restart the process if configs were updated
+            if data.get('restart', False):
+                execute_pm2_command(f"restart {process_name}")
+
+            return {
+                "message": f"Configuration for {process_name} updated successfully",
+                "config_files": {
+                    "pm2_config": str(pm2_config_path),
+                    "python_config": str(python_config_path)
+                }
+            }
+
+        except ProcessNotFoundError as e:
+            return {
+                'error': str(e),
+                'error_type': 'ProcessNotFoundError',
+                'timestamp': datetime.now().isoformat(),
+                'details': {'process_name': process_name}
+            }, 404
+        except Exception as e:
+            logger.error(f"Error updating configs for {process_name}: {str(e)}")
+            return {
+                'error': str(e),
+                'error_type': type(e).__name__,
+                'timestamp': datetime.now().isoformat(),
+                'details': None
+            }, 500           
                                  
             
 @processes_ns.route('/<string:process_name>')
