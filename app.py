@@ -1,5 +1,6 @@
 from flask import Flask, redirect
 from flask_restx import Api, Resource, fields, Namespace
+from flask_cors import CORS
 import subprocess
 import json
 import logging
@@ -12,7 +13,7 @@ import time
 
 # Load environment variables
 load_dotenv()
-
+CORS(app)
 # Configuration
 class Config:
     PORT = int(os.getenv('PORT', 5000))
