@@ -311,7 +311,7 @@ def create_pm2_config(process_name: str, config: dict) -> str:
     # Format the PM2 config
     pm2_config = {
         "name": process_name,
-        "script": f"/home/pm2/Python-Reporting-Wrapper/{config['python']['run_script']}",
+        "script": f"/home/pm2/pm2-configs/{config['python']['run_script']}",
         "args": config.get('python', {}).get('arguments', ''),
         "instances": config.get('pm2', {}).get('instances', 1),
         "exec_mode": config.get('pm2', {}).get('exec_mode', 'fork'),
@@ -332,7 +332,7 @@ def create_pm2_config(process_name: str, config: dict) -> str:
 
 def create_python_config(process_name: str, config: dict) -> str:
     """Create Python INI config file"""
-    python_config_dir = Path('/home/pm2/Python-Reporting-Wrapper')
+    python_config_dir = Path('/home/pm2/pm2-configs')
     python_config_dir.mkdir(parents=True, exist_ok=True)
     
     config_path = python_config_dir / f"{process_name}.ini"
@@ -426,7 +426,7 @@ class ProcessList(Resource):
                 try:
                     # Get config file paths
                     pm2_config = Path(f"/home/pm2/pm2-configs/{process['name']}.config.js")
-                    python_config = Path(f"/home/pm2/Python-Reporting-Wrapper/{process['name']}.ini")
+                    python_config = Path(f"/home/pm2/pm2-configs/{process['name']}.ini")
                     
                     process['config_files'] = {
                         'pm2_config': str(pm2_config) if pm2_config.exists() else None,
@@ -471,7 +471,7 @@ class ProcessList(Resource):
             
             # Create directories if they don't exist
             pm2_configs_dir = Path('/home/pm2/pm2-configs')
-            python_wrapper_dir = Path('/home/pm2/Python-Reporting-Wrapper')
+            python_wrapper_dir = Path('/home/pm2/pm2-configs')
             pm2_configs_dir.mkdir(parents=True, exist_ok=True)
             python_wrapper_dir.mkdir(parents=True, exist_ok=True)
             
@@ -479,7 +479,7 @@ class ProcessList(Resource):
             pm2_config_path = pm2_configs_dir / f"{process_name}.config.js"
             pm2_config = {
                 "name": process_name,
-                "script": "app.py",  # Using relative path since we'll be in Python-Reporting-Wrapper
+                "script": "app.py",  # Using relative path since we'll be in pm2-configs
                 "args": f"{process_name}.ini",
                 "instances": data.get('pm2', {}).get('instances', 1),
                 "exec_mode": 'fork',
@@ -529,10 +529,10 @@ class ProcessList(Resource):
                     if customers:
                         f.write(f"customers = {', '.join(customers)}\n")
             
-            # Start the process from Python-Reporting-Wrapper directory
+            # Start the process from pm2-configs directory
             original_dir = os.getcwd()
             try:
-                # Change to Python-Reporting-Wrapper directory
+                # Change to pm2-configs directory
                 os.chdir(python_wrapper_dir)
                 
                 # Start PM2 with full path to config
@@ -649,7 +649,7 @@ class ProcessConfig(Resource):
 
             # Get config file paths
             pm2_config_path = Path(f"/home/pm2/pm2-configs/{process_name}.config.js")
-            python_config_path = Path(f"/home/pm2/Python-Reporting-Wrapper/{process_name}.ini")
+            python_config_path = Path(f"/home/pm2/pm2-configs/{process_name}.ini")
 
             configs = {}
 
@@ -712,7 +712,7 @@ class ProcessConfig(Resource):
                 raise ProcessNotFoundError(f"Process {process_name} not found")
 
             pm2_config_path = Path(f"/home/pm2/pm2-configs/{process_name}.config.js")
-            python_config_path = Path(f"/home/pm2/Python-Reporting-Wrapper/{process_name}.ini")
+            python_config_path = Path(f"/home/pm2/pm2-configs/{process_name}.ini")
 
             # Update PM2 config if provided
             if 'pm2_config' in data and pm2_config_path.exists():
