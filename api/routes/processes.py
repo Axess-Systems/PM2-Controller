@@ -1,6 +1,6 @@
 from datetime import datetime
 from flask_restx import Resource
-from ...core.exceptions import ProcessNotFoundError, ProcessAlreadyExistsError
+from core.exceptions import ProcessNotFoundError, ProcessAlreadyExistsError
 
 class ProcessList(Resource):
     def __init__(self, api, pm2_service, process_manager):

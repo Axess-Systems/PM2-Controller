@@ -3,8 +3,8 @@ import json
 import time
 from typing import Union, Dict, List
 import logging
-from ..core.config import Config
-from ..core.exceptions import (
+from core.config import Config
+from core.exceptions import (
     PM2Error, ProcessNotFoundError, PM2TimeoutError,
     PM2CommandError, parse_pm2_error
 )

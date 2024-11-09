@@ -3,9 +3,9 @@ import json
 from pathlib import Path
 from typing import Dict, Optional
 import logging
-from ..core.config import Config
-from ..core.exceptions import ProcessNotFoundError, ProcessAlreadyExistsError
-from .pm2 import PM2Service
+from core.config import Config
+from core.exceptions import ProcessNotFoundError, ProcessAlreadyExistsError
+from services.pm2 import PM2Service
 
 class ProcessManager:
     """Service for managing PM2 processes and their configurations"""
