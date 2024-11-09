@@ -1,6 +1,6 @@
 from flask_restx import Namespace
-from .health import HealthCheck
-from .processes import ProcessList, Process, ProcessControl
+from health import HealthCheck
+from processes import ProcessList, Process, ProcessControl
 
 def register_routes(api, services):
     """Register all API routes"""
