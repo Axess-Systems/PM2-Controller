@@ -1046,8 +1046,13 @@ class ProcessStart(Resource):
 
 
 @logs_ns.route('/<string:process_name>')
+@api.doc(params={'process_name': 'Name of the PM2 process'})
 class ProcessLogs(Resource):
     @api.doc(
+        params={
+            'format': 'Log format (raw or json)',
+            'lines': 'Number of lines to return'
+        },
         responses={
             200: 'Success',
             404: ('Process not found', error_model),
@@ -1055,35 +1060,124 @@ class ProcessLogs(Resource):
         }
     )
     def get(self, process_name):
-        """Get process details for a specific process"""
+        """Get process logs"""
         try:
-            # Get all processes data
+            # Get format and lines parameters
+            log_format = request.args.get('format', 'raw')
+            num_lines = min(int(request.args.get('lines', 100)), Config.MAX_LOG_LINES)
+
+            # Check if process exists
             processes = execute_pm2_command("jlist")
-            
-            # Find the specific process
             process = next((p for p in processes if p['name'] == process_name), None)
             
             if not process:
                 raise ProcessNotFoundError(f"Process {process_name} not found")
 
-            # Return the complete process data
-            return jsonify(process)
+            # Get log file paths from process data
+            out_log_path = process['pm2_env'].get('pm_out_log_path')
+            err_log_path = process['pm2_env'].get('pm_err_log_path')
+
+            if not out_log_path or not err_log_path:
+                raise FileNotFoundError(f"Log paths not found for process {process_name}")
+
+            logs = {
+                'out': [],
+                'err': [],
+                'files': {
+                    'out': out_log_path,
+                    'err': err_log_path
+                }
+            }
+
+            # Read output logs
+            if Path(out_log_path).exists():
+                try:
+                    with open(out_log_path, 'r') as f:
+                        logs['out'] = list(deque(f, num_lines))
+                except Exception as e:
+                    logger.error(f"Error reading output log {out_log_path}: {str(e)}")
+                    logs['out'] = [f"Error reading log: {str(e)}"]
+            else:
+                logs['out'] = ["Output log file not found"]
+
+            # Read error logs
+            if Path(err_log_path).exists():
+                try:
+                    with open(err_log_path, 'r') as f:
+                        logs['err'] = list(deque(f, num_lines))
+                except Exception as e:
+                    logger.error(f"Error reading error log {err_log_path}: {str(e)}")
+                    logs['err'] = [f"Error reading log: {str(e)}"]
+            else:
+                logs['err'] = ["Error log file not found"]
+
+            # Add file sizes
+            try:
+                logs['files']['out_size'] = Path(out_log_path).stat().st_size if Path(out_log_path).exists() else 0
+                logs['files']['err_size'] = Path(err_log_path).stat().st_size if Path(err_log_path).exists() else 0
+            except Exception as e:
+                logger.error(f"Error getting log file sizes: {str(e)}")
+
+            if log_format == 'raw':
+                # Combine and format logs for raw output
+                combined_logs = []
+                for line in logs['out']:
+                    combined_logs.append(f"[OUT] {line.rstrip()}")
+                for line in logs['err']:
+                    combined_logs.append(f"[ERR] {line.rstrip()}")
                 
+                return {
+                    'logs': combined_logs,
+                    'files': logs['files']
+                }
+            else:
+                # Return structured JSON format
+                return {
+                    'stdout': logs['out'],
+                    'stderr': logs['err'],
+                    'files': logs['files']
+                }
+
         except ProcessNotFoundError as e:
+            logger.error(f"Process not found: {str(e)}")
             return {
                 'error': str(e),
                 'error_type': 'ProcessNotFoundError',
                 'timestamp': datetime.now().isoformat(),
-                'details': {'process_name': process_name}
+                'details': {
+                    'process_name': process_name,
+                    'pm2_processes': [p['name'] for p in processes]
+                }
             }, 404
+            
+        except ValueError as e:
+            logger.error(f"Invalid parameter: {str(e)}")
+            return {
+                'error': f"Invalid parameter: {str(e)}",
+                'error_type': 'ValueError',
+                'timestamp': datetime.now().isoformat(),
+                'details': {
+                    'format': request.args.get('format'),
+                    'lines': request.args.get('lines')
+                }
+            }, 400
+            
         except Exception as e:
+            logger.error(f"Error getting logs for {process_name}: {str(e)}")
             return {
                 'error': str(e),
                 'error_type': type(e).__name__,
                 'timestamp': datetime.now().isoformat(),
-                'details': None
+                'details': {
+                    'process_name': process_name,
+                    'log_paths': {
+                        'out': out_log_path if 'out_log_path' in locals() else None,
+                        'err': err_log_path if 'err_log_path' in locals() else None
+                    },
+                    'error_details': str(e)
+                }
             }, 500
-            
+                     
 @processes_ns.route('/<string:process_name>/reload')
 class ProcessReload(Resource):
     @api.doc(
