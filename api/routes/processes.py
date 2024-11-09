@@ -11,16 +11,13 @@ from core.exceptions import ProcessNotFoundError, ProcessAlreadyExistsError
 def create_process_routes(namespace):
     """Create process management routes"""
     
-    @namespace.route('/')
     class ProcessList(Resource):
-        _path = '/'
-        
-        def __init__(self, api=None, pm2_service=None, process_manager=None, logger=None, config=None, **kwargs):
+        def __init__(self, api=None, **kwargs):
             super().__init__(api)
-            self.pm2_service = pm2_service
-            self.process_manager = process_manager
-            self.logger = logger
-            self.config = config
+            self.pm2_service = kwargs.get('pm2_service')
+            self.process_manager = kwargs.get('process_manager')
+            self.logger = kwargs.get('logger')
+            self.config = kwargs.get('config')
             
             if not all([self.pm2_service, self.process_manager, self.logger, self.config]):
                 raise ValueError("Required services not provided to ProcessList")
@@ -93,14 +90,11 @@ def create_process_routes(namespace):
                     'details': None
                 }, 500
 
-    @namespace.route('/<string:process_name>')
     class Process(Resource):
-        _path = '/<string:process_name>'
-        
-        def __init__(self, api=None, pm2_service=None, logger=None, **kwargs):
+        def __init__(self, api=None, **kwargs):
             super().__init__(api)
-            self.pm2_service = pm2_service
-            self.logger = logger
+            self.pm2_service = kwargs.get('pm2_service')
+            self.logger = kwargs.get('logger')
             
             if not all([self.pm2_service, self.logger]):
                 raise ValueError("Required services not provided to Process")
@@ -151,14 +145,11 @@ def create_process_routes(namespace):
                     'details': None
                 }, 500
 
-    @namespace.route('/<string:process_name>/start')
     class ProcessStart(Resource):
-        _path = '/<string:process_name>/start'
-        
-        def __init__(self, api=None, pm2_service=None, logger=None, **kwargs):
+        def __init__(self, api=None, **kwargs):
             super().__init__(api)
-            self.pm2_service = pm2_service
-            self.logger = logger
+            self.pm2_service = kwargs.get('pm2_service')
+            self.logger = kwargs.get('logger')
             
             if not all([self.pm2_service, self.logger]):
                 raise ValueError("Required services not provided to ProcessStart")
@@ -190,14 +181,11 @@ def create_process_routes(namespace):
                     'details': None
                 }, 500
 
-    @namespace.route('/<string:process_name>/stop')
     class ProcessStop(Resource):
-        _path = '/<string:process_name>/stop'
-        
-        def __init__(self, api=None, pm2_service=None, logger=None, **kwargs):
+        def __init__(self, api=None, **kwargs):
             super().__init__(api)
-            self.pm2_service = pm2_service
-            self.logger = logger
+            self.pm2_service = kwargs.get('pm2_service')
+            self.logger = kwargs.get('logger')
             
             if not all([self.pm2_service, self.logger]):
                 raise ValueError("Required services not provided to ProcessStop")
@@ -229,14 +217,11 @@ def create_process_routes(namespace):
                     'details': None
                 }, 500
 
-    @namespace.route('/<string:process_name>/restart')
     class ProcessRestart(Resource):
-        _path = '/<string:process_name>/restart'
-        
-        def __init__(self, api=None, pm2_service=None, logger=None, **kwargs):
+        def __init__(self, api=None, **kwargs):
             super().__init__(api)
-            self.pm2_service = pm2_service
-            self.logger = logger
+            self.pm2_service = kwargs.get('pm2_service')
+            self.logger = kwargs.get('logger')
             
             if not all([self.pm2_service, self.logger]):
                 raise ValueError("Required services not provided to ProcessRestart")
@@ -267,6 +252,13 @@ def create_process_routes(namespace):
                     'timestamp': datetime.now().isoformat(),
                     'details': None
                 }, 500
+
+    # Register routes with namespace
+    namespace.add_resource(ProcessList, '/')
+    namespace.add_resource(Process, '/<string:process_name>')
+    namespace.add_resource(ProcessStart, '/<string:process_name>/start')
+    namespace.add_resource(ProcessStop, '/<string:process_name>/stop')
+    namespace.add_resource(ProcessRestart, '/<string:process_name>/restart')
 
     return {
         'ProcessList': ProcessList,
