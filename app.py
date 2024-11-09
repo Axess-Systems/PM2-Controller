@@ -6,6 +6,7 @@ from core.config import Config
 from core.logging import setup_logging
 from services.pm2 import PM2Service
 from services.process_manager import ProcessManager
+from services.log_manager import LogManager
 from api.models.process import create_api_models
 from api.models.error import create_error_models
 from api.routes import register_routes
@@ -40,7 +41,8 @@ def create_app() -> Flask:
     # Initialize services
     services = {
         'pm2_service': PM2Service(config, logger),
-        'process_manager': ProcessManager(config, logger)
+        'process_manager': ProcessManager(config, logger),
+        'log_manager': LogManager(config, logger)
     }
     
     # Register routes
