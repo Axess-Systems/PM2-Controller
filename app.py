@@ -68,24 +68,18 @@ def create_app():
         'config': config
     }
     
-    # Create routes with direct dependency injection
+    # Create and register routes
     health_routes = create_health_routes(health_ns)
+    for route_class, path in health_routes.values():
+        health_ns.add_resource(route_class, path, resource_class_kwargs=common_deps)
+
     process_routes = create_process_routes(processes_ns)
+    for route_class, path in process_routes.values():
+        processes_ns.add_resource(route_class, path, resource_class_kwargs=common_deps)
+
     log_routes = create_log_routes(logs_ns)
-    
-    # Register health routes
-    health_ns.add_resource(health_routes['HealthCheck'], '/', 
-        resource_class_kwargs=common_deps)
-    
-    # Register process routes
-    for route_class in process_routes.values():
-        processes_ns.add_resource(route_class, getattr(route_class, '_path', '/'), 
-            resource_class_kwargs=common_deps)
-    
-    # Register log routes
-    for route_class in log_routes.values():
-        logs_ns.add_resource(route_class, getattr(route_class, '_path', '/'), 
-            resource_class_kwargs=common_deps)
+    for route_class, path in log_routes.values():
+        logs_ns.add_resource(route_class, path, resource_class_kwargs=common_deps)
     
     return app
 
