@@ -6,13 +6,14 @@ class HealthCheck(Resource):
         super().__init__()
         self.api = api
         self.pm2_service = pm2_service
-
-    @api.doc(
-        responses={
+        
+        # Setup route documentation
+        self.get.__doc__ = "Check service health status"
+        self.get = self.api.doc(responses={
             200: 'Service is healthy',
             500: 'Service is unhealthy'
-        }
-    )
+        })(self.get)
+
     def get(self):
         """Check service health status"""
         try:
