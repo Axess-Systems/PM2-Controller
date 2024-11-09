@@ -12,6 +12,7 @@ from typing import Dict, List, Optional, Union
 import time
 from pathlib import Path
 import re
+from collections import deque
 
 # Load environment variables
 load_dotenv()
@@ -1050,8 +1051,8 @@ class ProcessStart(Resource):
 class ProcessLogs(Resource):
     @api.doc(
         params={
-            'format': 'Log format (raw or json)',
-            'lines': 'Number of lines to return'
+            'format': 'Log format (raw)',
+            'lines': 'Number of lines to return (default: 100)'
         },
         responses={
             200: 'Success',
@@ -1066,77 +1067,52 @@ class ProcessLogs(Resource):
             log_format = request.args.get('format', 'raw')
             num_lines = min(int(request.args.get('lines', 100)), Config.MAX_LOG_LINES)
 
-            # Check if process exists
+            # Get the PM2 process information
             processes = execute_pm2_command("jlist")
             process = next((p for p in processes if p['name'] == process_name), None)
             
             if not process:
                 raise ProcessNotFoundError(f"Process {process_name} not found")
 
-            # Get log file paths from process data
-            out_log_path = process['pm2_env'].get('pm_out_log_path')
-            err_log_path = process['pm2_env'].get('pm_err_log_path')
+            # Get log paths from PM2 environment
+            out_log_path = Path(process['pm2_env'].get('pm_out_log_path', ''))
+            err_log_path = Path(process['pm2_env'].get('pm_err_log_path', ''))
 
-            if not out_log_path or not err_log_path:
-                raise FileNotFoundError(f"Log paths not found for process {process_name}")
+            logs = []
 
-            logs = {
-                'out': [],
-                'err': [],
-                'files': {
-                    'out': out_log_path,
-                    'err': err_log_path
-                }
-            }
-
-            # Read output logs
-            if Path(out_log_path).exists():
+            # Read output logs if they exist
+            if out_log_path.exists():
                 try:
                     with open(out_log_path, 'r') as f:
-                        logs['out'] = list(deque(f, num_lines))
+                        out_logs = deque(f, num_lines)
+                        logs.extend([f"[OUT] {line.rstrip()}" for line in out_logs])
                 except Exception as e:
                     logger.error(f"Error reading output log {out_log_path}: {str(e)}")
-                    logs['out'] = [f"Error reading log: {str(e)}"]
+                    logs.append(f"[OUT] Error reading log: {str(e)}")
             else:
-                logs['out'] = ["Output log file not found"]
+                logs.append(f"[OUT] Log file not found: {out_log_path}")
 
-            # Read error logs
-            if Path(err_log_path).exists():
+            # Read error logs if they exist
+            if err_log_path.exists():
                 try:
                     with open(err_log_path, 'r') as f:
-                        logs['err'] = list(deque(f, num_lines))
+                        err_logs = deque(f, num_lines)
+                        logs.extend([f"[ERR] {line.rstrip()}" for line in err_logs])
                 except Exception as e:
                     logger.error(f"Error reading error log {err_log_path}: {str(e)}")
-                    logs['err'] = [f"Error reading log: {str(e)}"]
+                    logs.append(f"[ERR] Error reading log: {str(e)}")
             else:
-                logs['err'] = ["Error log file not found"]
+                logs.append(f"[ERR] Log file not found: {err_log_path}")
 
-            # Add file sizes
-            try:
-                logs['files']['out_size'] = Path(out_log_path).stat().st_size if Path(out_log_path).exists() else 0
-                logs['files']['err_size'] = Path(err_log_path).stat().st_size if Path(err_log_path).exists() else 0
-            except Exception as e:
-                logger.error(f"Error getting log file sizes: {str(e)}")
-
-            if log_format == 'raw':
-                # Combine and format logs for raw output
-                combined_logs = []
-                for line in logs['out']:
-                    combined_logs.append(f"[OUT] {line.rstrip()}")
-                for line in logs['err']:
-                    combined_logs.append(f"[ERR] {line.rstrip()}")
-                
-                return {
-                    'logs': combined_logs,
-                    'files': logs['files']
+            return {
+                'logs': logs,
+                'files': {
+                    'out': str(out_log_path),
+                    'err': str(err_log_path),
+                    'out_size': out_log_path.stat().st_size if out_log_path.exists() else 0,
+                    'err_size': err_log_path.stat().st_size if err_log_path.exists() else 0
                 }
-            else:
-                # Return structured JSON format
-                return {
-                    'stdout': logs['out'],
-                    'stderr': logs['err'],
-                    'files': logs['files']
-                }
+            }
 
         except ProcessNotFoundError as e:
             logger.error(f"Process not found: {str(e)}")
@@ -1146,21 +1122,9 @@ class ProcessLogs(Resource):
                 'timestamp': datetime.now().isoformat(),
                 'details': {
                     'process_name': process_name,
-                    'pm2_processes': [p['name'] for p in processes]
+                    'available_processes': [p['name'] for p in processes]
                 }
             }, 404
-            
-        except ValueError as e:
-            logger.error(f"Invalid parameter: {str(e)}")
-            return {
-                'error': f"Invalid parameter: {str(e)}",
-                'error_type': 'ValueError',
-                'timestamp': datetime.now().isoformat(),
-                'details': {
-                    'format': request.args.get('format'),
-                    'lines': request.args.get('lines')
-                }
-            }, 400
             
         except Exception as e:
             logger.error(f"Error getting logs for {process_name}: {str(e)}")
@@ -1171,10 +1135,9 @@ class ProcessLogs(Resource):
                 'details': {
                     'process_name': process_name,
                     'log_paths': {
-                        'out': out_log_path if 'out_log_path' in locals() else None,
-                        'err': err_log_path if 'err_log_path' in locals() else None
-                    },
-                    'error_details': str(e)
+                        'out': str(out_log_path) if 'out_log_path' in locals() else None,
+                        'err': str(err_log_path) if 'err_log_path' in locals() else None
+                    }
                 }
             }, 500
                      
