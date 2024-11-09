@@ -20,10 +20,6 @@ from api.routes.logs import create_log_routes
 
 def create_app():
     """Create and configure the Flask application"""
-    # Load configuration and setup logging
-    config = Config()
-    logger = setup_logging(config)
-    
     # Initialize Flask app
     app = Flask(__name__)
     
@@ -39,6 +35,10 @@ def create_app():
     # Enable CORS
     CORS(app)
     
+    # Load configuration and setup logging
+    config = Config()
+    logger = setup_logging(config)
+    
     # Initialize services
     services = {
         'config': config,
@@ -53,9 +53,15 @@ def create_app():
     processes_ns = api.namespace('processes', description='PM2 process operations')
     logs_ns = api.namespace('logs', description='Process logs operations')
     
-    # Register models
-    api.models.update(create_api_models(api))
+    # Register models - make them available to all namespaces
+    models = create_api_models(api)
+    for name, model in models.items():
+        api.models[name] = model
     api.models['error'] = create_error_models(api)
+    
+    # Share models with namespaces
+    for ns in [health_ns, processes_ns, logs_ns]:
+        ns.models = api.models
     
     # Register routes
     create_health_routes(health_ns, services)
