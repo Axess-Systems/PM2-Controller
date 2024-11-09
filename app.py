@@ -44,15 +44,6 @@ def create_app():
     process_manager = ProcessManager(config, logger)
     log_manager = LogManager(config, logger)
     
-    # Create service dependencies
-    kwargs = {
-        'pm2_service': pm2_service,
-        'process_manager': process_manager,
-        'log_manager': log_manager,
-        'logger': logger,
-        'config': config
-    }
-    
     # Create namespaces
     health_ns = api.namespace('health', description='Health checks')
     processes_ns = api.namespace('processes', description='PM2 process operations')
@@ -68,22 +59,33 @@ def create_app():
     for ns in [health_ns, processes_ns, logs_ns]:
         ns.models = api.models
     
-    # Helper function to add route with dependencies
-    def add_route(ns, route_class):
-        ns.add_resource(route_class, getattr(route_class, '_path', '/'), resource_class_kwargs=kwargs)
+    # Define common dependencies
+    common_deps = {
+        'pm2_service': pm2_service,
+        'process_manager': process_manager,
+        'log_manager': log_manager,
+        'logger': logger,
+        'config': config
+    }
     
-    # Register routes and assign dependencies
+    # Create routes with direct dependency injection
     health_routes = create_health_routes(health_ns)
     process_routes = create_process_routes(processes_ns)
     log_routes = create_log_routes(logs_ns)
     
-    # Register each route with its dependencies
-    for route in health_routes.values():
-        add_route(health_ns, route)
-    for route in process_routes.values():
-        add_route(processes_ns, route)
-    for route in log_routes.values():
-        add_route(logs_ns, route)
+    # Register health routes
+    health_ns.add_resource(health_routes['HealthCheck'], '/', 
+        resource_class_kwargs=common_deps)
+    
+    # Register process routes
+    for route_class in process_routes.values():
+        processes_ns.add_resource(route_class, getattr(route_class, '_path', '/'), 
+            resource_class_kwargs=common_deps)
+    
+    # Register log routes
+    for route_class in log_routes.values():
+        logs_ns.add_resource(route_class, getattr(route_class, '_path', '/'), 
+            resource_class_kwargs=common_deps)
     
     return app
 
