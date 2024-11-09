@@ -53,7 +53,7 @@ def create_app():
     processes_ns = api.namespace('processes', description='PM2 process operations')
     logs_ns = api.namespace('logs', description='Process logs operations')
     
-    # Register models - make them available to all namespaces
+    # Register models
     models = create_api_models(api)
     for name, model in models.items():
         api.models[name] = model
@@ -63,14 +63,14 @@ def create_app():
     for ns in [health_ns, processes_ns, logs_ns]:
         ns.models = api.models
     
-    # Register routes
+    # Register routes directly
     create_health_routes(health_ns, services)
     create_process_routes(processes_ns, services)
     create_log_routes(logs_ns, services)
     
     return app
 
-if __name__ == '__main__':
+def main():
     app = create_app()
     config = Config()
     logger = setup_logging(config)
@@ -85,3 +85,6 @@ if __name__ == '__main__':
     except Exception as e:
         logger.error(f"Service startup failed: {str(e)}")
         raise
+
+if __name__ == '__main__':
+    main()

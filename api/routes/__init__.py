@@ -1,61 +1,49 @@
+"""
+Route initialization and registration
+This module handles the registration of all API routes and their namespaces.
+"""
+
 from flask_restx import Namespace
-from .health import HealthCheck
-from .processes import ProcessList, Process, ProcessControl
-from .logs import ProcessLogs
+
+def create_namespaces(api):
+    """Create API namespaces"""
+    return {
+        'health': api.namespace('health', description='Health checks'),
+        'processes': api.namespace('processes', description='PM2 process operations'),
+        'logs': api.namespace('logs', description='Process logs operations')
+    }
 
 def register_routes(api, services):
-    """Register all API routes"""
-    
+    """
+    Register all API routes
+    Args:
+        api: Flask-RESTX API instance
+        services: Dictionary containing service instances
+    """
     # Create namespaces
-    health_ns = api.namespace('health', description='Health checks')
-    processes_ns = api.namespace('processes', description='PM2 process operations')
-    logs_ns = api.namespace('logs', description='Process logs operations')
+    namespaces = create_namespaces(api)
 
-    # Register health routes
-    health_ns.add_resource(
-        HealthCheck,
-        '/',
-        resource_class_kwargs={
-            'api': health_ns,
-            'pm2_service': services['pm2_service']
-        }
-    )
+    # Share API models with all namespaces
+    for ns in namespaces.values():
+        ns.models = api.models
 
-    # Register process routes
-    processes_ns.add_resource(
-        ProcessList,
-        '/',
-        resource_class_kwargs={
-            'api': processes_ns,
-            'pm2_service': services['pm2_service'],
-            'process_manager': services['process_manager']
-        }
-    )
+    # Import route creators
+    from .health import create_health_routes
+    from .processes import create_process_routes
+    from .logs import create_log_routes
 
-    processes_ns.add_resource(
-        Process,
-        '/<string:process_name>',
-        resource_class_kwargs={
-            'api': processes_ns,
-            'pm2_service': services['pm2_service']
-        }
-    )
+    # Register routes with their respective namespaces
+    route_creators = {
+        'health': create_health_routes,
+        'processes': create_process_routes,
+        'logs': create_log_routes
+    }
 
-    processes_ns.add_resource(
-        ProcessControl,
-        '/<string:process_name>/<string:action>',
-        resource_class_kwargs={
-            'api': processes_ns,
-            'pm2_service': services['pm2_service']
-        }
-    )
+    # Create routes for each namespace
+    routes = {}
+    for name, creator in route_creators.items():
+        routes[name] = creator(namespaces[name], services)
 
-    # Register logs routes
-    logs_ns.add_resource(
-        ProcessLogs,
-        '/<string:process_name>',
-        resource_class_kwargs={
-            'api': logs_ns,
-            'log_manager': services['log_manager']
-        }
-    )
+    return routes
+
+__all__ = ['register_routes']

@@ -1,10 +1,8 @@
 from datetime import datetime
-from flask_restx import Resource, Namespace
+from flask_restx import Resource
 
-def create_health_routes(namespace: Namespace, services):
+def create_health_routes(namespace, services):
     """Create health check routes"""
-    
-    error_model = namespace.models['error']
     
     @namespace.route('/')
     class HealthCheck(Resource):
@@ -16,7 +14,7 @@ def create_health_routes(namespace: Namespace, services):
         @namespace.doc(
             responses={
                 200: 'Service is healthy',
-                500: ('Service is unhealthy', error_model)
+                500: 'Service is unhealthy'
             }
         )
         def get(self):
@@ -39,4 +37,5 @@ def create_health_routes(namespace: Namespace, services):
                     'details': str(e)
                 }, 500
 
+    # Return the route class for reference if needed
     return {'HealthCheck': HealthCheck}
