@@ -2,9 +2,9 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional
 from collections import deque
-from ..core.config import Config
-from ..core.exceptions import ProcessNotFoundError
-from .pm2 import PM2Service
+from core.config import Config
+from core.exceptions import ProcessNotFoundError
+from services.pm2 import PM2Service
 
 class LogManager:
     """Service for managing PM2 process logs"""

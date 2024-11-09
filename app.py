@@ -2,27 +2,32 @@ from flask import Flask
 from flask_restx import Api
 from flask_cors import CORS
 
+# Import core modules
 from core.config import Config
 from core.logging import setup_logging
+
+# Import services
 from services.pm2 import PM2Service
 from services.process_manager import ProcessManager
 from services.log_manager import LogManager
+
+# Import API components
 from api.models.process import create_api_models
 from api.models.error import create_error_models
-from api.routes import register_routes
+from api.routes.processes import create_process_routes
+from api.routes.health import create_health_routes
+from api.routes.logs import create_log_routes
 
-def create_app() -> Flask:
+def create_app():
     """Create and configure the Flask application"""
-    # Load configuration
-    config = Config.from_env()
-    
-    # Setup logging
+    # Load configuration and setup logging
+    config = Config()
     logger = setup_logging(config)
     
     # Initialize Flask app
     app = Flask(__name__)
     
-    # Initialize API
+    # Initialize API with documentation
     api = Api(app, 
         version='1.0', 
         title='PM2 Controller API',
@@ -34,25 +39,34 @@ def create_app() -> Flask:
     # Enable CORS
     CORS(app)
     
-    # Create API models
-    api.models.update(create_api_models(api))
-    api.models['error'] = create_error_models(api)
-    
     # Initialize services
     services = {
+        'config': config,
+        'logger': logger,
         'pm2_service': PM2Service(config, logger),
         'process_manager': ProcessManager(config, logger),
         'log_manager': LogManager(config, logger)
     }
     
+    # Create namespaces
+    health_ns = api.namespace('health', description='Health checks')
+    processes_ns = api.namespace('processes', description='PM2 process operations')
+    logs_ns = api.namespace('logs', description='Process logs operations')
+    
+    # Register models
+    api.models.update(create_api_models(api))
+    api.models['error'] = create_error_models(api)
+    
     # Register routes
-    register_routes(api, services)
+    create_health_routes(health_ns, services)
+    create_process_routes(processes_ns, services)
+    create_log_routes(logs_ns, services)
     
     return app
 
 if __name__ == '__main__':
     app = create_app()
-    config = Config.from_env()
+    config = Config()
     logger = setup_logging(config)
     
     try:
