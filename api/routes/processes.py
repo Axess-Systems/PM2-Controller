@@ -17,11 +17,14 @@ def create_process_routes(namespace):
     """
     @namespace.route('/')
     class ProcessList(Resource):
-        def __init__(self, api=None, *args, **kwargs):
+        def __init__(self, api=None, pm2_service=None, process_manager=None, logger=None, **kwargs):
             super().__init__(api)
-            self.pm2_service = kwargs.get('pm2_service')
-            self.process_manager = kwargs.get('process_manager')
-            self.logger = kwargs.get('logger')
+            self.pm2_service = pm2_service
+            self.process_manager = process_manager
+            self.logger = logger
+            
+            if not self.pm2_service or not self.process_manager or not self.logger:
+                raise ValueError("Required services not provided: pm2_service, process_manager, and logger are required")
 
         @namespace.doc(
             responses={

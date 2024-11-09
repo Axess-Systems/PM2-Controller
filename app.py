@@ -40,13 +40,9 @@ def create_app():
     logger = setup_logging(config)
     
     # Initialize services
-    services = {
-        'config': config,
-        'logger': logger,
-        'pm2_service': PM2Service(config, logger),
-        'process_manager': ProcessManager(config, logger),
-        'log_manager': LogManager(config, logger)
-    }
+    pm2_service = PM2Service(config, logger)
+    process_manager = ProcessManager(config, logger)
+    log_manager = LogManager(config, logger)
     
     # Create namespaces
     health_ns = api.namespace('health', description='Health checks')
@@ -63,13 +59,24 @@ def create_app():
     for ns in [health_ns, processes_ns, logs_ns]:
         ns.models = api.models
     
-    # Register routes
-    create_process_routes(processes_ns)
+    # Create services dict for dependency injection
+    services = {
+        'pm2_service': pm2_service,
+        'process_manager': process_manager,
+        'log_manager': log_manager,
+        'logger': logger,
+        'config': config
+    }
     
-    # Set up resource_class_kwargs for each namespace
+    # Set resource_class_kwargs for each namespace BEFORE creating routes
     processes_ns.resource_class_kwargs = services
     health_ns.resource_class_kwargs = services
     logs_ns.resource_class_kwargs = services
+    
+    # Register routes
+    create_health_routes(health_ns)
+    create_process_routes(processes_ns)
+    create_log_routes(logs_ns)
     
     return app
 
