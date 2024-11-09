@@ -44,6 +44,15 @@ def create_app():
     process_manager = ProcessManager(config, logger)
     log_manager = LogManager(config, logger)
     
+    # Create service dependencies
+    kwargs = {
+        'pm2_service': pm2_service,
+        'process_manager': process_manager,
+        'log_manager': log_manager,
+        'logger': logger,
+        'config': config
+    }
+    
     # Create namespaces
     health_ns = api.namespace('health', description='Health checks')
     processes_ns = api.namespace('processes', description='PM2 process operations')
@@ -59,32 +68,31 @@ def create_app():
     for ns in [health_ns, processes_ns, logs_ns]:
         ns.models = api.models
     
-    # Create services dict for dependency injection
-    services = {
-        'pm2_service': pm2_service,
-        'process_manager': process_manager,
-        'log_manager': log_manager,
-        'logger': logger,
-        'config': config
-    }
+    # Helper function to add route with dependencies
+    def add_route(ns, route_class):
+        ns.add_resource(route_class, getattr(route_class, '_path', '/'), resource_class_kwargs=kwargs)
     
-    # Set resource_class_kwargs for each namespace
-    for ns in [health_ns, processes_ns, logs_ns]:
-        ns.resource_class_kwargs = services
+    # Register routes and assign dependencies
+    health_routes = create_health_routes(health_ns)
+    process_routes = create_process_routes(processes_ns)
+    log_routes = create_log_routes(logs_ns)
     
-    # Register routes
-    create_health_routes(health_ns)
-    create_process_routes(processes_ns)
-    create_log_routes(logs_ns)
+    # Register each route with its dependencies
+    for route in health_routes.values():
+        add_route(health_ns, route)
+    for route in process_routes.values():
+        add_route(processes_ns, route)
+    for route in log_routes.values():
+        add_route(logs_ns, route)
     
     return app
 
 def main():
     app = create_app()
     config = Config()
+    logger = setup_logging(config)
     
     try:
-        logger = setup_logging(config)
         logger.info("Starting PM2 Controller API")
         app.run(
             host=config.HOST,

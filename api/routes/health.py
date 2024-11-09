@@ -6,6 +6,8 @@ def create_health_routes(namespace):
     
     @namespace.route('/')
     class HealthCheck(Resource):
+        _path = '/'  # Add path information
+        
         def __init__(self, api=None, pm2_service=None, logger=None, **kwargs):
             super().__init__(api)
             self.pm2_service = pm2_service
