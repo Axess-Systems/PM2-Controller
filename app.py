@@ -2,16 +2,11 @@ from flask import Flask
 from flask_restx import Api
 from flask_cors import CORS
 
-# Import core modules
 from core.config import Config
 from core.logging import setup_logging
-
-# Import services
 from services.pm2 import PM2Service
 from services.process_manager import ProcessManager
 from services.log_manager import LogManager
-
-# Import API components
 from api.models.process import create_api_models
 from api.models.error import create_error_models
 from api.routes.processes import create_process_routes
@@ -23,7 +18,7 @@ def create_app():
     # Initialize Flask app
     app = Flask(__name__)
     
-    # Initialize API with documentation
+    # Initialize API
     api = Api(app, 
         version='1.0', 
         title='PM2 Controller API',
@@ -44,6 +39,15 @@ def create_app():
     process_manager = ProcessManager(config, logger)
     log_manager = LogManager(config, logger)
     
+    # Create services dict
+    services = {
+        'pm2_service': pm2_service,
+        'process_manager': process_manager,
+        'log_manager': log_manager,
+        'logger': logger,
+        'config': config
+    }
+    
     # Create namespaces
     health_ns = api.namespace('health', description='Health checks')
     processes_ns = api.namespace('processes', description='PM2 process operations')
@@ -59,27 +63,10 @@ def create_app():
     for ns in [health_ns, processes_ns, logs_ns]:
         ns.models = api.models
     
-    # Define common dependencies
-    common_deps = {
-        'pm2_service': pm2_service,
-        'process_manager': process_manager,
-        'log_manager': log_manager,
-        'logger': logger,
-        'config': config
-    }
-    
-    # Create and register routes
-    health_routes = create_health_routes(health_ns)
-    for route_class, path in health_routes.values():
-        health_ns.add_resource(route_class, path, resource_class_kwargs=common_deps)
-
-    process_routes = create_process_routes(processes_ns)
-    for route_class, path in process_routes.values():
-        processes_ns.add_resource(route_class, path, resource_class_kwargs=common_deps)
-
-    log_routes = create_log_routes(logs_ns)
-    for route_class, path in log_routes.values():
-        logs_ns.add_resource(route_class, path, resource_class_kwargs=common_deps)
+    # Register routes with services
+    create_process_routes(processes_ns, services)
+    create_health_routes(health_ns, services)
+    create_log_routes(logs_ns, services)
     
     return app
 
