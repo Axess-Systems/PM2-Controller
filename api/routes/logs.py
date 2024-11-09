@@ -3,18 +3,15 @@ from flask import request
 from flask_restx import Resource
 from core.exceptions import ProcessNotFoundError
 
-def create_log_routes(namespace):
+def create_log_routes(namespace, services=None):
     """Create log management routes"""
     
     @namespace.route('/<string:process_name>')
     class ProcessLogs(Resource):
-        def __init__(self, api=None, log_manager=None, logger=None, **kwargs):
-            super().__init__(api)
-            self.log_manager = log_manager
-            self.logger = logger
-            
-            if not self.log_manager or not self.logger:
-                raise ValueError("Required services not provided: log_manager and logger are required")
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.log_manager = services['log_manager']
+            self.logger = services['logger']
 
         @namespace.doc(
             params={
@@ -79,4 +76,4 @@ def create_log_routes(namespace):
                     'details': {'process_name': process_name}
                 }, 500
 
-    return {'ProcessLogs': ProcessLogs}
+    return None

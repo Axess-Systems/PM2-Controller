@@ -1,19 +1,15 @@
 from datetime import datetime
 from flask_restx import Resource
 
-def create_health_routes(namespace):
+def create_health_routes(namespace, services=None):
     """Create health check routes"""
     
+    @namespace.route('/')
     class HealthCheck(Resource):
-        _path = '/'
-        
-        def __init__(self, api=None, pm2_service=None, logger=None, **kwargs):
-            super().__init__(api)
-            self.pm2_service = pm2_service
-            self.logger = logger
-            
-            if not all([self.pm2_service, self.logger]):
-                raise ValueError("Required services not provided: pm2_service and logger are required")
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.pm2_service = services['pm2_service']
+            self.logger = services['logger']
 
         @namespace.doc(
             responses={
@@ -41,5 +37,4 @@ def create_health_routes(namespace):
                     'details': str(e)
                 }, 500
 
-    # Don't use the decorator, we'll register the route manually
-    return {'HealthCheck': HealthCheck}
+    return None
