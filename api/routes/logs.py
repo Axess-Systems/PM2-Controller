@@ -1,19 +1,20 @@
 from datetime import datetime
 from flask import request
-from flask_restx import Resource, Namespace
+from flask_restx import Resource
 from core.exceptions import ProcessNotFoundError
 
-def create_log_routes(namespace: Namespace, services):
+def create_log_routes(namespace):
     """Create log management routes"""
-    
-    error_model = namespace.models['error']
     
     @namespace.route('/<string:process_name>')
     class ProcessLogs(Resource):
-        def __init__(self, api=None, *args, **kwargs):
+        def __init__(self, api=None, log_manager=None, logger=None, **kwargs):
             super().__init__(api)
-            self.log_manager = services['log_manager']
-            self.logger = services['logger']
+            self.log_manager = log_manager
+            self.logger = logger
+            
+            if not self.log_manager or not self.logger:
+                raise ValueError("Required services not provided: log_manager and logger are required")
 
         @namespace.doc(
             params={
@@ -22,8 +23,8 @@ def create_log_routes(namespace: Namespace, services):
             },
             responses={
                 200: 'Success',
-                404: ('Process not found', error_model),
-                500: ('Internal server error', error_model)
+                404: 'Process not found',
+                500: 'Internal server error'
             }
         )
         def get(self, process_name):
@@ -52,8 +53,8 @@ def create_log_routes(namespace: Namespace, services):
         @namespace.doc(
             responses={
                 200: 'Success',
-                404: ('Process not found', error_model),
-                500: ('Internal server error', error_model)
+                404: 'Process not found',
+                500: 'Internal server error'
             }
         )
         def delete(self, process_name):

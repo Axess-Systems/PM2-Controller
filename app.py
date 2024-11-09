@@ -68,10 +68,9 @@ def create_app():
         'config': config
     }
     
-    # Set resource_class_kwargs for each namespace BEFORE creating routes
-    processes_ns.resource_class_kwargs = services
-    health_ns.resource_class_kwargs = services
-    logs_ns.resource_class_kwargs = services
+    # Set resource_class_kwargs for each namespace
+    for ns in [health_ns, processes_ns, logs_ns]:
+        ns.resource_class_kwargs = services
     
     # Register routes
     create_health_routes(health_ns)
@@ -83,9 +82,9 @@ def create_app():
 def main():
     app = create_app()
     config = Config()
-    logger = setup_logging(config)
     
     try:
+        logger = setup_logging(config)
         logger.info("Starting PM2 Controller API")
         app.run(
             host=config.HOST,
