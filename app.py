@@ -63,10 +63,13 @@ def create_app():
     for ns in [health_ns, processes_ns, logs_ns]:
         ns.models = api.models
     
-    # Register routes directly
-    create_health_routes(health_ns, services)
-    create_process_routes(processes_ns, services)
-    create_log_routes(logs_ns, services)
+    # Register routes
+    create_process_routes(processes_ns)
+    
+    # Set up resource_class_kwargs for each namespace
+    processes_ns.resource_class_kwargs = services
+    health_ns.resource_class_kwargs = services
+    logs_ns.resource_class_kwargs = services
     
     return app
 
