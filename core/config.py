@@ -1,7 +1,6 @@
 from typing import Dict
 import os
 from pathlib import Path
-from dotenv import load_dotenv
 
 class Config:
     """Application configuration management"""
