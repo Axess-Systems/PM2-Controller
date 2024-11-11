@@ -99,7 +99,8 @@ module.exports = {{
                 if [ -f ${{processFolder}}/requirements.txt ]; then \\
                   ${{venvPath}}/bin/pip install -r ${{processFolder}}/requirements.txt; \\
                 fi && \\
-                pm2 delete ${{processName}} || true && \\
+                pm2 start ${{configFile}} && \\
+                pm2 stop ${{configFile}} && \\
                 pm2 start ${{processName}} --env production && \\
                 pm2 save`
         }}
