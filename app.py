@@ -1,7 +1,6 @@
 from flask import Flask
 from flask_restx import Api
 from flask_cors import CORS
-from werkzeug.middleware.proxy_fix import ProxyFix
 
 from core.config import Config
 from core.logging import setup_logging
@@ -19,22 +18,7 @@ def create_app():
     # Initialize Flask app
     app = Flask(__name__)
     
-    # Enable proxy support
-    app.wsgi_app = ProxyFix(app.wsgi_app)
-    
-    # Configure CORS
-    CORS(app, resources={
-        r"/api/*": {
-            "origins": "*",
-            "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-            "allow_headers": ["Content-Type", "Authorization"],
-            "expose_headers": ["Content-Type"],
-            "supports_credentials": True,
-            "max_age": 600
-        }
-    })
-    
-    # Initialize API with CORS enabled
+    # Initialize API
     api = Api(app, 
         version='1.0', 
         title='PM2 Controller API',
@@ -43,13 +27,8 @@ def create_app():
         prefix='/api'
     )
     
-    # Add CORS headers to Swagger UI
-    @app.after_request
-    def after_request(response):
-        response.headers.add('Access-Control-Allow-Origin', '*')
-        response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
-        response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
-        return response
+    # Enable CORS
+    CORS(app)
     
     # Load configuration and setup logging
     config = Config()
