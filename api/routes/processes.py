@@ -136,6 +136,7 @@ def create_process_routes(namespace, services=None):
                     'details': None
                 }, 500
 
+            
     @namespace.route('/<string:process_name>/start')
     class ProcessStart(Resource):
         def __init__(self, *args, **kwargs):
@@ -238,5 +239,110 @@ def create_process_routes(namespace, services=None):
                     'details': None
                 }, 500
 
-    # We're not returning the routes anymore since we're registering them directly
+    @namespace.route('/<string:process_name>/update')
+    class ProcessUpdate(Resource):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.process_manager = services['process_manager']
+            self.logger = services['logger']
+
+        @namespace.doc(
+            responses={
+                200: 'Process updated successfully',
+                404: 'Process not found',
+                500: 'Update failed'
+            }
+        )
+        def post(self, process_name):
+            """Update a process using PM2 deploy (updates source code from repository)"""
+            try:
+                result = self.process_manager.update_process(process_name)
+                return result
+                
+            except ProcessNotFoundError as e:
+                return {
+                    'error': str(e),
+                    'error_type': 'ProcessNotFoundError',
+                    'timestamp': datetime.now().isoformat(),
+                    'details': {'process_name': process_name}
+                }, 404
+                
+            except Exception as e:
+                self.logger.error(f"Error updating process {process_name}: {str(e)}")
+                return {
+                    'error': str(e),
+                    'error_type': type(e).__name__,
+                    'timestamp': datetime.now().isoformat(),
+                    'details': {'process_name': process_name}
+                }, 500
+
+    @namespace.route('/<string:process_name>/config')
+    class ProcessConfigUpdate(Resource):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.process_manager = services['process_manager']
+            self.logger = services['logger']
+        
+        @namespace.doc(
+            responses={
+                200: 'Current configuration',
+                404: 'Process not found',
+                500: 'Internal server error'
+            }
+        )
+        def get(self, process_name):
+            """Get current process configuration"""
+            try:
+                config = self.process_manager.get_process_config(process_name)
+                return config
+                
+            except ProcessNotFoundError as e:
+                return {
+                    'error': str(e),
+                    'error_type': 'ProcessNotFoundError',
+                    'timestamp': datetime.now().isoformat(),
+                    'details': {'process_name': process_name}
+                }, 404
+                
+            except Exception as e:
+                self.logger.error(f"Error getting config for {process_name}: {str(e)}")
+                return {
+                    'error': str(e),
+                    'error_type': type(e).__name__,
+                    'timestamp': datetime.now().isoformat(),
+                    'details': {'process_name': process_name}
+                }, 500
+
+        @namespace.doc(
+            responses={
+                200: 'Configuration updated successfully',
+                404: 'Process not found',
+                500: 'Internal server error'
+            }
+        )
+        @namespace.expect(namespace.models['update_config'])
+        def put(self, process_name):
+            """Update process configuration"""
+            try:
+                result = self.process_manager.update_config(process_name, namespace.payload)
+                return result
+                
+            except ProcessNotFoundError as e:
+                return {
+                    'error': str(e),
+                    'error_type': 'ProcessNotFoundError',
+                    'timestamp': datetime.now().isoformat(),
+                    'details': {'process_name': process_name}
+                }, 404
+                
+            except Exception as e:
+                self.logger.error(f"Error updating config for {process_name}: {str(e)}")
+                return {
+                    'error': str(e),
+                    'error_type': type(e).__name__,
+                    'timestamp': datetime.now().isoformat(),
+                    'details': {'process_name': process_name}
+                }, 500
+
+
     return None
