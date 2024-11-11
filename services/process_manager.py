@@ -97,10 +97,9 @@ module.exports = {{
                 python3 -m venv ${{venvPath}} && \\
                 ${{venvPath}}/bin/pip install --upgrade pip && \\
                 if [ -f ${{processFolder}}/requirements.txt ]; then \\
-                  ${{venvPath}}/bin/pip install -r ${{processFolder}}/requirements.txt; \\
+                    ${{venvPath}}/bin/pip install -r ${{processFolder}}/requirements.txt; \\
                 fi && \\
-                pm2 start ${{configFile}} && \\
-                pm2 stop ${{configFile}} && \\
+                pm2 delete ${{processName}} || true && \\
                 pm2 start ${{processName}} --env production && \\
                 pm2 save`
         }}
@@ -132,14 +131,57 @@ module.exports = {{
             self.logger.info(f"PM2 deploy command output: {output}")
             
             return {
-                "message": f"Command '{command}' executed successfully for {process_name}",
+                "success": True,
                 "output": output
             }
             
         except subprocess.CalledProcessError as e:
             error_msg = e.stderr.strip()
             self.logger.error(f"PM2 deploy command failed: {error_msg}")
-            raise PM2CommandError(f"Deploy command failed: {error_msg}")
+            return {
+                "success": False,
+                "error": error_msg
+            }
+    
+    def create_process(self, config_data: Dict) -> Dict:
+        """Create a new PM2 process config file and set it up"""
+        try:
+            name = config_data['name']
+            
+            # Check if process already exists
+            if Path(f"/home/pm2/pm2-configs/{name}.config.js").exists():
+                raise ProcessAlreadyExistsError(f"Process {name} already exists")
+            
+            # Create config file
+            config_path = self._create_pm2_config(
+                name=name,
+                repo_url=config_data['repository']['url'],
+                script=config_data.get('script', 'app.py'),
+                cron=config_data.get('cron', ''),
+                auto_restart=config_data.get('auto_restart', True),
+                env_vars=config_data.get('env_vars')
+            )
+            
+            # Run setup
+            setup_result = self._run_pm2_deploy_command(name, "setup")
+            if not setup_result["success"]:
+                raise PM2CommandError(f"Setup failed: {setup_result['error']}")
+            
+            # Run deploy
+            deploy_result = self._run_pm2_deploy_command(name, "")
+            if not deploy_result["success"]:
+                raise PM2CommandError(f"Deployment failed: {deploy_result['error']}")
+            
+            return {
+                "message": f"Process {name} created and deployed successfully",
+                "config_file": str(config_path),
+                "setup_output": setup_result["output"],
+                "deploy_output": deploy_result["output"]
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Failed to create process {config_data.get('name', 'unknown')}: {str(e)}")
+            raise
     
     def get_process_config(self, name: str) -> Dict:
         """Get current process configuration"""
@@ -189,37 +231,6 @@ module.exports = {{
             self.logger.error(f"Error reading config for {name}: {str(e)}")
             raise
     
-    def create_process(self, name: str, repo_url: str, script: str = 'app.py', 
-                      cron: str = '', auto_restart: bool = True, env_vars: Dict[str, str] = None) -> Dict:
-        """Create a new PM2 process config file and set it up"""
-        try:
-            # Create config file
-            config_path = self._create_pm2_config(
-                name=name,
-                repo_url=repo_url,
-                script=script,
-                cron=cron,
-                auto_restart=auto_restart,
-                env_vars=env_vars
-            )
-            
-            # Run setup
-            setup_result = self._run_pm2_deploy_command(name, "setup")
-            
-            # Run deploy
-            deploy_result = self._run_pm2_deploy_command(name, "")
-            
-            return {
-                "message": f"Process {name} created and deployed successfully",
-                "config_file": str(config_path),
-                "setup_output": setup_result["output"],
-                "deploy_output": deploy_result["output"]
-            }
-            
-        except Exception as e:
-            self.logger.error(f"Failed to create process {name}: {str(e)}")
-            raise
-    
     def update_process(self, name: str) -> Dict:
         """Update an existing process using PM2 deploy"""
         try:
@@ -227,6 +238,8 @@ module.exports = {{
                 raise ProcessNotFoundError(f"Process {name} not found")
                 
             result = self._run_pm2_deploy_command(name, "update")
+            if not result["success"]:
+                raise PM2CommandError(f"Update failed: {result['error']}")
             
             return {
                 "message": f"Process {name} updated successfully",
@@ -257,7 +270,9 @@ module.exports = {{
             )
             
             # Reload the process
-            result = self._run_pm2_deploy_command(name, "exec pm2 reload " + name)
+            result = self._run_pm2_deploy_command(name, f"exec pm2 reload {name}")
+            if not result["success"]:
+                raise PM2CommandError(f"Reload failed: {result['error']}")
             
             return {
                 "message": f"Configuration for {name} updated successfully",
