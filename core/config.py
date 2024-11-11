@@ -6,7 +6,6 @@ class Config:
     """Application configuration management"""
     
     def __init__(self):
-        load_dotenv()
         
         # Server Configuration
         self.PORT = int(os.environ.get('PORT', 5000))
