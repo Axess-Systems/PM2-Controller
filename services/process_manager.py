@@ -130,7 +130,7 @@ module.exports = {{
     def _run_pm2_deploy_command(self, process_name: str, command: str, max_retries: int = 3) -> Dict:
         """Run PM2 deploy command with locking and retries"""
         lock = self._get_process_lock(process_name)
-        if not lock.acquire(timeout=30):  # Wait up to 30 seconds for lock
+        if not lock.acquire(timeout=120):  # Wait up to 30 seconds for lock
             raise PM2CommandError(f"Timeout waiting for lock on process {process_name}")
 
         try:
