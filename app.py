@@ -1,16 +1,18 @@
 import os
 import sys
+import signal
 import subprocess
 from pathlib import Path
+import logging
+from typing import Optional
+from flask import Flask
 
 def ensure_venv():
     """Ensure we're running inside the virtual environment"""
-    # Get the directory containing the current script
     current_dir = Path(__file__).parent.absolute()
     venv_path = current_dir / "venv"
     venv_python = venv_path / "bin" / "python"
 
-    # Check if we're already in the virtual environment
     in_venv = sys.prefix != sys.base_prefix
 
     if not in_venv:
@@ -22,7 +24,6 @@ def ensure_venv():
             print(f"Python interpreter not found at {venv_python}")
             sys.exit(1)
 
-        # Re-execute the script with the virtual environment's Python
         os.execv(str(venv_python), [str(venv_python), __file__] + sys.argv[1:])
 
 # Check venv before importing any other modules
@@ -43,6 +44,67 @@ from api.models.error import create_error_models
 from api.routes.processes import create_process_routes
 from api.routes.health import create_health_routes
 from api.routes.logs import create_log_routes
+
+class GracefulShutdown:
+    """Handle graceful shutdown of the application"""
+    
+    def __init__(self, app: Flask, logger: logging.Logger):
+        self.app = app
+        self.logger = logger
+        self._shutdown_requested = False
+        self._shutdown_hooks = []
+        self.setup_signal_handlers()
+
+    def setup_signal_handlers(self):
+        """Setup handlers for various signals"""
+        signal.signal(signal.SIGINT, self._handle_shutdown_signal)
+        signal.signal(signal.SIGTERM, self._handle_shutdown_signal)
+
+    def _handle_shutdown_signal(self, signum: int, frame):
+        """Handle shutdown signals"""
+        signals = {
+            signal.SIGINT: 'SIGINT',
+            signal.SIGTERM: 'SIGTERM'
+        }
+        signal_name = signals.get(signum, str(signum))
+        
+        if self._shutdown_requested:
+            self.logger.warning(f"Received second {signal_name}, forcing immediate shutdown")
+            sys.exit(1)
+            
+        self.logger.info(f"Received {signal_name}, initiating graceful shutdown...")
+        self._shutdown_requested = True
+        self.initiate_shutdown()
+
+    def add_shutdown_hook(self, hook):
+        """Add a function to be called during shutdown"""
+        self._shutdown_hooks.append(hook)
+
+    def initiate_shutdown(self):
+        """Perform graceful shutdown"""
+        try:
+            # Execute shutdown hooks
+            for hook in self._shutdown_hooks:
+                try:
+                    hook()
+                except Exception as e:
+                    self.logger.error(f"Error in shutdown hook: {str(e)}")
+
+            self.logger.info("Shutdown hooks completed")
+            
+            # Stop Flask server
+            if self.app:
+                func = self.app.config.get('shutdown_hook')
+                if func:
+                    func()
+                    
+            self.logger.info("Server shutdown completed successfully")
+            
+        except Exception as e:
+            self.logger.error(f"Error during shutdown: {str(e)}")
+        finally:
+            # Exit cleanly
+            sys.exit(0)
 
 def create_app():
     """Create and configure the Flask application"""
@@ -119,6 +181,19 @@ def create_app():
     create_health_routes(health_ns, services)
     create_log_routes(logs_ns, services)
     
+    # Setup shutdown manager
+    shutdown_manager = GracefulShutdown(app, logger)
+    
+    # Add cleanup hooks
+    def cleanup_hook():
+        logger.info("Cleaning up resources...")
+        # Add any cleanup tasks here
+    
+    shutdown_manager.add_shutdown_hook(cleanup_hook)
+    
+    # Store shutdown manager in app config
+    app.config['shutdown_manager'] = shutdown_manager
+    
     return app
 
 def main():
@@ -128,10 +203,15 @@ def main():
     
     try:
         logger.info("Starting PM2 Controller API")
-        app.run(
-            host=config.HOST,
+        # Use Werkzeug development server with graceful shutdown support
+        from werkzeug.serving import run_simple
+        run_simple(
+            hostname=config.HOST,
             port=config.PORT,
-            debug=config.DEBUG
+            application=app,
+            use_reloader=config.DEBUG,
+            use_debugger=config.DEBUG,
+            threaded=True
         )
     except Exception as e:
         logger.error(f"Service startup failed: {str(e)}")
