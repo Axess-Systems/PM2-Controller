@@ -1,6 +1,37 @@
+import os
+import sys
+import subprocess
+from pathlib import Path
+
+def ensure_venv():
+    """Ensure we're running inside the virtual environment"""
+    # Get the directory containing the current script
+    current_dir = Path(__file__).parent.absolute()
+    venv_path = current_dir / "venv"
+    venv_python = venv_path / "bin" / "python"
+
+    # Check if we're already in the virtual environment
+    in_venv = sys.prefix != sys.base_prefix
+
+    if not in_venv:
+        if not venv_path.exists():
+            print(f"Virtual environment not found at {venv_path}")
+            sys.exit(1)
+        
+        if not venv_python.exists():
+            print(f"Python interpreter not found at {venv_python}")
+            sys.exit(1)
+
+        # Re-execute the script with the virtual environment's Python
+        os.execv(str(venv_python), [str(venv_python), __file__] + sys.argv[1:])
+
+# Check venv before importing any other modules
+ensure_venv()
+
 from flask import Flask
 from flask_restx import Api
 from flask_cors import CORS
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from core.config import Config
 from core.logging import setup_logging
@@ -18,7 +49,22 @@ def create_app():
     # Initialize Flask app
     app = Flask(__name__)
     
-    # Initialize API
+    # Enable proxy support
+    app.wsgi_app = ProxyFix(app.wsgi_app)
+    
+    # Configure CORS
+    CORS(app, resources={
+        r"/api/*": {
+            "origins": "*",
+            "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+            "allow_headers": ["Content-Type", "Authorization"],
+            "expose_headers": ["Content-Type"],
+            "supports_credentials": True,
+            "max_age": 600
+        }
+    })
+    
+    # Initialize API with CORS enabled
     api = Api(app, 
         version='1.0', 
         title='PM2 Controller API',
@@ -27,8 +73,13 @@ def create_app():
         prefix='/api'
     )
     
-    # Enable CORS
-    CORS(app)
+    # Add CORS headers to Swagger UI
+    @app.after_request
+    def after_request(response):
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+        return response
     
     # Load configuration and setup logging
     config = Config()
