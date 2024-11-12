@@ -186,187 +186,7 @@ class ProcessManager:
                 "success": False,
                 "error": error_msg
             }
-
-    def _run_pm2_deploy_command(self, process_name: str, command: str = "", max_retries: int = 3) -> Dict:
-        """Run PM2 deploy command with retries and force flag"""
-        config_path = f"/home/pm2/pm2-configs/{process_name}.config.js"
-        
-        # Build command
-        cmd = f"pm2 deploy {config_path} production"
-        if command:
-            cmd += f" {command}"
-        cmd += " --force"
-        
-        for attempt in range(max_retries):
-            result = self._run_command(cmd)
-            if result["success"]:
-                return result
-                
-            if attempt < max_retries - 1:
-                self.logger.warning(f"Retrying command... ({attempt + 1}/{max_retries})")
-                time.sleep(5)
-        
-        return result
-
-    def create_process(self, config_data: Dict) -> Dict:
-        """Create a new PM2 process config file and set it up"""
-        try:
-            name = config_data['name']
-            created_config = False
-            
-            # Check if process already exists
-            if Path(f"/home/pm2/pm2-configs/{name}.config.js").exists():
-                raise ProcessAlreadyExistsError(f"Process {name} already exists")
-            
-            # Create config file first
-            config_path = self._create_pm2_config(
-                name=name,
-                repo_url=config_data['repository']['url'],
-                script=config_data.get('script', 'app.py'),
-                cron=config_data.get('cron'),
-                auto_restart=config_data.get('auto_restart', True),
-                env_vars=config_data.get('env_vars')
-            )
-            created_config = True
-            
-            # Run setup and deploy in a single command to avoid intermediate signals
-            self.logger.info(f"Setting up and deploying process {name}...")
-            
-            setup_result = self._run_pm2_deploy_command(name, "setup")
-            if not setup_result["success"]:
-                raise PM2CommandError(f"Setup failed: {setup_result.get('error', 'Unknown error')}")
-            
-            time.sleep(2)
-            
-            deploy_result = self._run_pm2_deploy_command(name)
-            if not deploy_result["success"]:
-                raise PM2CommandError(f"Deployment failed: {deploy_result.get('error', 'Unknown error')}")
-            
-            return {
-                "message": f"Process {name} created and deployed successfully",
-                "config_file": str(config_path),
-                "setup_output": setup_result["output"],
-                "deploy_output": deploy_result["output"]
-            }
-            
-        except Exception as e:
-            self.logger.error(f"Failed to create process {name}: {str(e)}")
-            if created_config:
-                try:
-                    config_path = Path(f"/home/pm2/pm2-configs/{name}.config.js")
-                    if config_path.exists():
-                        config_path.unlink()
-                    process_dir = Path(f"/home/pm2/pm2-processes/{name}")
-                    if process_dir.exists():
-                        shutil.rmtree(process_dir)
-                except Exception as cleanup_error:
-                    self.logger.error(f"Cleanup failed: {str(cleanup_error)}")
-            raise
-        
-    def _run_pm2_start_command(self, process_name: str) -> Dict:
-        """Run PM2 start command for a process"""
-
-        
     
-        
-        return 
-
-    def create_process(self, config_data: Dict) -> Dict:
-        """Create a new PM2 process config file and set it up"""
-        name = config_data['name']
-        created_config = False
-        
-        try:
-            # Check if process already exists
-            if Path(f"/home/pm2/pm2-configs/{name}.config.js").exists():
-                raise ProcessAlreadyExistsError(f"Process {name} already exists")
-            
-            # Create config file first
-            config_path = self._create_pm2_config(
-                name=name,
-                repo_url=config_data['repository']['url'],
-                script=config_data.get('script', 'app.py'),
-                cron=config_data.get('cron'),
-                auto_restart=config_data.get('auto_restart', True),
-                env_vars=config_data.get('env_vars')
-            )
-            created_config = True
-            
-            # Run setup
-            setup_result = self._run_pm2_deploy_command(name, "setup")
-            if not setup_result["success"]:
-                raise PM2CommandError(f"Setup failed: {setup_result.get('error', 'Unknown error')}")
-            
-            # Small delay between setup and deploy
-            time.sleep(2)
-            
-            # Run deploy
-            deploy_result = self._run_pm2_deploy_command(name, "")
-            if not deploy_result["success"]:
-                raise PM2CommandError(f"Deployment failed: {deploy_result.get('error', 'Unknown error')}")
-            
-            # Small delay before starting
-            time.sleep(2)
-            
-            # Start the process
-            start_result = self._run_pm2_start_command(name)
-            if not start_result["success"]:
-                raise PM2CommandError(f"Start failed: {start_result.get('error', 'Unknown error')}")
-            
-            return {
-                "message": f"Process {name} created, deployed, and started successfully",
-                "config_file": str(config_path),
-                "setup_output": setup_result["output"],
-                "deploy_output": deploy_result["output"],
-                "start_output": start_result["output"]
-            }
-            
-        except Exception as e:
-            self.logger.error(f"Failed to create process {name}: {str(e)}")
-            # Cleanup on failure
-            if created_config:
-                try:
-                    config_path = Path(f"/home/pm2/pm2-configs/{name}.config.js")
-                    if config_path.exists():
-                        config_path.unlink()
-                    process_dir = Path(f"/home/pm2/pm2-processes/{name}")
-                    if process_dir.exists():
-                        shutil.rmtree(process_dir)
-                except Exception as cleanup_error:
-                    self.logger.error(f"Cleanup failed: {str(cleanup_error)}")
-            raise
-    
-    def update_process(self, name: str) -> Dict:
-        """Update an existing process using PM2 deploy"""
-        try:
-            if not Path(f"/home/pm2/pm2-configs/{name}.config.js").exists():
-                raise ProcessNotFoundError(f"Process {name} not found")
-                
-            with self._get_process_lock(name):
-                # Run deployment
-                deploy_result = self._run_pm2_deploy_command(name, "")
-                if not deploy_result["success"]:
-                    raise PM2CommandError(f"Update failed: {deploy_result['error']}")
-                
-                # Small delay before starting
-                time.sleep(2)
-                
-                # Start the process
-                start_result = self._run_pm2_start_command(name)
-                if not start_result["success"]:
-                    raise PM2CommandError(f"Start failed: {start_result['error']}")
-                
-                return {
-                    "message": f"Process {name} updated and restarted successfully",
-                    "deploy_output": deploy_result["output"],
-                    "start_output": start_result["output"]
-                }
-            
-        except Exception as e:
-            self.logger.error(f"Failed to update process {name}: {str(e)}")
-            raise
-       
-        
     def get_process_config(self, name: str) -> Dict:
         """Get current process configuration"""
         config_path = Path(f"/home/pm2/pm2-configs/{name}.config.js")
@@ -479,3 +299,152 @@ class ProcessManager:
         except Exception as e:
             self.logger.error(f"Failed to delete process {name}: {str(e)}")
             raise
+        
+        
+    def _run_command(self, cmd: str, timeout: int = 300) -> Dict:
+        """Run a shell command and handle the response"""
+        try:
+            self.logger.info(f"Running command: {cmd}")
+            
+            # Create a new session for the subprocess
+            start_new_session = True if os.name != 'nt' else False
+            
+            process = subprocess.run(
+                cmd,
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=timeout,
+                start_new_session=start_new_session,  # Isolate the subprocess
+                env=dict(os.environ, PM2_SILENT='true')  # Prevent PM2 from sending signals
+            )
+            
+            if process.returncode == 0:
+                output = process.stdout.strip()
+                self.logger.info(f"Command output: {output}")
+                return {
+                    "success": True,
+                    "output": output
+                }
+            else:
+                error_msg = process.stderr.strip()
+                self.logger.error(f"Command failed: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+                
+        except subprocess.TimeoutExpired as e:
+            error_msg = f"Command timed out after {timeout} seconds"
+            self.logger.error(error_msg)
+            return {
+                "success": False,
+                "error": error_msg
+            }
+        except Exception as e:
+            error_msg = str(e)
+            self.logger.error(f"Error running command: {error_msg}")
+            return {
+                "success": False,
+                "error": error_msg
+            }
+
+    def create_process(self, config_data: Dict) -> Dict:
+        """Create a new PM2 process config file and set it up"""
+        try:
+            name = config_data['name']
+            created_config = False
+            
+            # Check if process already exists
+            if Path(f"/home/pm2/pm2-configs/{name}.config.js").exists():
+                raise ProcessAlreadyExistsError(f"Process {name} already exists")
+            
+            # Create config file first
+            config_path = self._create_pm2_config(
+                name=name,
+                repo_url=config_data['repository']['url'],
+                script=config_data.get('script', 'app.py'),
+                cron=config_data.get('cron'),
+                auto_restart=config_data.get('auto_restart', True),
+                env_vars=config_data.get('env_vars')
+            )
+            created_config = True
+            
+            # Run setup
+            self.logger.info(f"Setting up process {name}...")
+            setup_result = self._run_pm2_deploy_command(name, "setup")
+            if not setup_result["success"]:
+                raise PM2CommandError(f"Setup failed: {setup_result.get('error', 'Unknown error')}")
+            
+            time.sleep(2)  # Small delay between setup and deploy
+            
+            # Run deploy
+            self.logger.info(f"Deploying process {name}...")
+            deploy_result = self._run_pm2_deploy_command(name)
+            if not deploy_result["success"]:
+                raise PM2CommandError(f"Deployment failed: {deploy_result.get('error', 'Unknown error')}")
+            
+            return {
+                "message": f"Process {name} created and deployed successfully",
+                "config_file": str(config_path),
+                "setup_output": setup_result["output"],
+                "deploy_output": deploy_result["output"]
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Failed to create process {name}: {str(e)}")
+            # Cleanup on failure
+            if created_config:
+                try:
+                    config_path = Path(f"/home/pm2/pm2-configs/{name}.config.js")
+                    if config_path.exists():
+                        config_path.unlink()
+                    process_dir = Path(f"/home/pm2/pm2-processes/{name}")
+                    if process_dir.exists():
+                        shutil.rmtree(process_dir)
+                except Exception as cleanup_error:
+                    self.logger.error(f"Cleanup failed: {str(cleanup_error)}")
+            raise
+
+    def update_process(self, name: str) -> Dict:
+        """Update an existing process using PM2 deploy"""
+        try:
+            if not Path(f"/home/pm2/pm2-configs/{name}.config.js").exists():
+                raise ProcessNotFoundError(f"Process {name} not found")
+            
+            # Run update
+            self.logger.info(f"Updating process {name}...")
+            result = self._run_pm2_deploy_command(name, "update")
+            if not result["success"]:
+                raise PM2CommandError(f"Update failed: {result['error']}")
+            
+            return {
+                "message": f"Process {name} updated successfully",
+                "output": result["output"]
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Failed to update process {name}: {str(e)}")
+            raise
+
+    def _run_pm2_deploy_command(self, process_name: str, command: str = "") -> Dict:
+        """Run PM2 deploy command with retries and force flag"""
+        config_path = f"/home/pm2/pm2-configs/{process_name}.config.js"
+        
+        # Build command
+        cmd = f"pm2 deploy {config_path} production"
+        if command:
+            cmd += f" {command}"
+        cmd += " --force"
+        
+        for attempt in range(3):  # Try up to 3 times
+            result = self._run_command(cmd)
+            if result["success"]:
+                return result
+                
+            if attempt < 2:  # If not the last attempt
+                self.logger.warning(f"Retrying command... ({attempt + 1}/3)")
+                time.sleep(5)
+        
+        return result
