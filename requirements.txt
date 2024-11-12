@@ -1,6 +1,7 @@
-flask
-flask-restx
-apscheduler
+Flask==3.0.0
+flask-restx==1.3.0
+flask-cors==4.0.0
 python-dateutil==2.8.2
-Werkzeug
-flask-cors
+Werkzeug==3.0.1
+attrs==23.1.0
+jsonschema==4.20.0
