@@ -127,7 +127,8 @@ module.exports = {{
                 ${{venvPath}}/bin/pip install --upgrade pip && \\
                 if [ -f ${{processFolder}}/requirements.txt ]; then \\
                     ${{venvPath}}/bin/pip install -r ${{processFolder}}/requirements.txt; \\
-                fi`
+                fi \\
+                pm2 start ${{configFile}}`
         }}
     }}
 }};'''
