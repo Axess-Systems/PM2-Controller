@@ -143,42 +143,64 @@ class ProcessManager:
         """Run a shell command and handle the response"""
         try:
             self.logger.info(f"Running command: {cmd}")
-            result = subprocess.run(
+            
+            # Run command but don't propagate signals to subprocess
+            process = subprocess.Popen(
                 cmd,
                 shell=True,
-                check=True,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=timeout
+                preexec_fn=os.setsid  # Use new process group
             )
             
-            output = result.stdout.strip()
-            self.logger.info(f"Command output: {output}")
-            
-            return {
-                "success": True,
-                "output": output
-            }
-            
-        except subprocess.CalledProcessError as e:
-            error_msg = e.stderr.strip()
-            self.logger.error(f"Command failed: {error_msg}")
-            return {
-                "success": False,
-                "error": error_msg
-            }
-        except subprocess.TimeoutExpired:
-            error_msg = f"Command timed out after {timeout} seconds"
-            self.logger.error(error_msg)
+            try:
+                stdout, stderr = process.communicate(timeout=timeout)
+                if process.returncode == 0:
+                    output = stdout.strip()
+                    self.logger.info(f"Command output: {output}")
+                    return {
+                        "success": True,
+                        "output": output
+                    }
+                else:
+                    error_msg = stderr.strip()
+                    self.logger.error(f"Command failed: {error_msg}")
+                    return {
+                        "success": False,
+                        "error": error_msg
+                    }
+                    
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGTERM)  # Kill entire process group
+                error_msg = f"Command timed out after {timeout} seconds"
+                self.logger.error(error_msg)
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+                
+        except Exception as e:
+            error_msg = str(e)
+            self.logger.error(f"Error running command: {error_msg}")
             return {
                 "success": False,
                 "error": error_msg
             }
 
-    def _run_pm2_deploy_command(self, process_name: str, command: str, max_retries: int = 3) -> Dict:
-        """Run PM2 deploy command with retries"""
+    def _run_pm2_deploy_command(self, process_name: str, command: str = "", max_retries: int = 3) -> Dict:
+        """Run PM2 deploy command with retries and force flag"""
         config_path = f"/home/pm2/pm2-configs/{process_name}.config.js"
-        cmd = f"pm2 deploy {config_path} production {command} --force"
+        
+        # Build command
+        cmd = f"pm2 deploy {config_path} production"
+        if command:
+            cmd += f" {command}"
+        cmd += " --force"
+        
+        # Don't interfere with API process
+        if process_name == "PM2Controller":
+            self.logger.info("Deploying API process, using separate process group")
         
         for attempt in range(max_retries):
             result = self._run_command(cmd)
@@ -189,7 +211,8 @@ class ProcessManager:
                 self.logger.warning(f"Retrying command... ({attempt + 1}/{max_retries})")
                 time.sleep(5)
         
-        return result  # Return last attempt result
+        return result
+
 
     def _run_pm2_start_command(self, process_name: str) -> Dict:
         """Run PM2 start command for a process"""
