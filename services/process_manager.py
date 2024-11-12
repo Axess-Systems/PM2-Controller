@@ -127,7 +127,8 @@ module.exports = {{
                 ${{venvPath}}/bin/pip install --upgrade pip && \\
                 if [ -f ${{processFolder}}/requirements.txt ]; then \\
                     ${{venvPath}}/bin/pip install -r ${{processFolder}}/requirements.txt; \\
-                fi`
+                fi && \\
+                pm2 start ${{configFile}}`
         }}
     }}
 }};'''
@@ -138,38 +139,67 @@ module.exports = {{
         
         return config_path
 
-    def _run_pm2_start_command(self, process_name: str) -> Dict:
-        """Run PM2 start command for a process"""
-        try:
-            config_path = f"/home/pm2/pm2-configs/{process_name}.config.js"
-            cmd = f"pm2 start {config_path}"
-            
-            self.logger.info(f"Starting process with command: {cmd}")
-            result = subprocess.run(
-                cmd,
-                shell=True,
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=30
-            )
-            
-            output = result.stdout.strip()
-            self.logger.info(f"PM2 start command output: {output}")
-            
-            return {
-                "success": True,
-                "output": output
-            }
-            
-        except subprocess.CalledProcessError as e:
-            error_msg = e.stderr.strip()
-            self.logger.error(f"PM2 start command failed: {error_msg}")
-            return {
-                "success": False,
-                "error": error_msg
-            }
-
+    def _run_pm2_deploy_command(self, process_name: str, command: str, max_retries: int = 3) -> Dict:
+        """Run PM2 deploy command with locking and retries"""
+        # Clear any stale locks first
+        self._clear_stale_lock(process_name)
+        
+        # Get a new lock
+        lock = self._get_process_lock(process_name)
+        
+        # Try to acquire the lock
+        for attempt in range(3):  # Try 3 times to acquire lock
+            if lock.acquire(timeout=10):  # Wait up to 10 seconds for lock
+                try:
+                    # Update lock timeout
+                    self._lock_timeouts[process_name] = time.time()
+                    
+                    config_path = f"/home/pm2/pm2-configs/{process_name}.config.js"
+                    cmd = f"pm2 deploy {config_path} production {command} --force"
+                    
+                    for cmd_attempt in range(max_retries):
+                        try:
+                            self.logger.info(f"Running PM2 deploy command (attempt {cmd_attempt + 1}/{max_retries}): {cmd}")
+                            result = subprocess.run(
+                                cmd,
+                                shell=True,
+                                check=True,
+                                capture_output=True,
+                                text=True,
+                                timeout=300  # 5 minute timeout
+                            )
+                            
+                            output = result.stdout.strip()
+                            self.logger.info(f"PM2 deploy command output: {output}")
+                            
+                            return {
+                                "success": True,
+                                "output": output
+                            }
+                            
+                        except subprocess.TimeoutExpired:
+                            if cmd_attempt == max_retries - 1:
+                                raise PM2CommandError(f"Command timed out after multiple attempts: {cmd}")
+                            self.logger.warning(f"Command timed out, retrying... ({cmd_attempt + 1}/{max_retries})")
+                            time.sleep(5)  # Wait before retry
+                            
+                        except subprocess.CalledProcessError as e:
+                            if cmd_attempt == max_retries - 1:
+                                raise PM2CommandError(f"Command failed after multiple attempts: {e.stderr}")
+                            self.logger.warning(f"Command failed, retrying... ({cmd_attempt + 1}/{max_retries}): {e.stderr}")
+                            time.sleep(5)  # Wait before retry
+                            
+                finally:
+                    lock.release()
+                    
+            else:
+                if attempt < 2:  # Log warning for first two attempts
+                    self.logger.warning(f"Failed to acquire lock for {process_name}, attempt {attempt + 1}/3")
+                    time.sleep(2)  # Wait before retry
+                else:
+                    raise PM2CommandError(f"Unable to acquire lock for process {process_name} after multiple attempts")
+        
+        raise PM2CommandError(f"Failed to acquire lock for process {process_name}")
 
     def create_process(self, config_data: Dict) -> Dict:
         """Create a new PM2 process config file and set it up"""
@@ -204,20 +234,11 @@ module.exports = {{
             if not deploy_result["success"]:
                 raise PM2CommandError(f"Deployment failed: {deploy_result.get('error', 'Unknown error')}")
             
-            # Small delay before starting
-            time.sleep(2)
-            
-            # Start the process
-            start_result = self._run_pm2_start_command(name)
-            if not start_result["success"]:
-                raise PM2CommandError(f"Start failed: {start_result.get('error', 'Unknown error')}")
-            
             return {
-                "message": f"Process {name} created, deployed, and started successfully",
+                "message": f"Process {name} created and deployed successfully",
                 "config_file": str(config_path),
                 "setup_output": setup_result["output"],
-                "deploy_output": deploy_result["output"],
-                "start_output": start_result["output"]
+                "deploy_output": deploy_result["output"]
             }
             
         except Exception as e:
@@ -234,36 +255,7 @@ module.exports = {{
                 except Exception as cleanup_error:
                     self.logger.error(f"Cleanup failed: {str(cleanup_error)}")
             raise
-
-    def update_process(self, name: str) -> Dict:
-        """Update an existing process using PM2 deploy"""
-        try:
-            if not Path(f"/home/pm2/pm2-configs/{name}.config.js").exists():
-                raise ProcessNotFoundError(f"Process {name} not found")
-                
-            with self._get_process_lock(name):
-                # Run deployment
-                deploy_result = self._run_pm2_deploy_command(name, "")
-                if not deploy_result["success"]:
-                    raise PM2CommandError(f"Update failed: {deploy_result['error']}")
-                
-                # Small delay before starting
-                time.sleep(2)
-                
-                # Start the process
-                start_result = self._run_pm2_start_command(name)
-                if not start_result["success"]:
-                    raise PM2CommandError(f"Start failed: {start_result['error']}")
-                
-                return {
-                    "message": f"Process {name} updated and restarted successfully",
-                    "deploy_output": deploy_result["output"],
-                    "start_output": start_result["output"]
-                }
-            
-        except Exception as e:
-            self.logger.error(f"Failed to update process {name}: {str(e)}")
-            raise  
+        
         
     def get_process_config(self, name: str) -> Dict:
         """Get current process configuration"""
@@ -311,6 +303,61 @@ module.exports = {{
             
         except Exception as e:
             self.logger.error(f"Error reading config for {name}: {str(e)}")
+            raise
+
+    def update_process(self, name: str) -> Dict:
+        """Update an existing process using PM2 deploy"""
+        try:
+            if not Path(f"/home/pm2/pm2-configs/{name}.config.js").exists():
+                raise ProcessNotFoundError(f"Process {name} not found")
+                
+            with self._get_process_lock(name):
+                result = self._run_pm2_deploy_command(name, "update")
+                if not result["success"]:
+                    raise PM2CommandError(f"Update failed: {result['error']}")
+                
+                return {
+                    "message": f"Process {name} updated successfully",
+                    "output": result["output"]
+                }
+            
+        except Exception as e:
+            self.logger.error(f"Failed to update process {name}: {str(e)}")
+            raise
+
+    def update_config(self, name: str, config_data: Dict) -> Dict:
+        """Update process configuration"""
+        try:
+            if not Path(f"/home/pm2/pm2-configs/{name}.config.js").exists():
+                raise ProcessNotFoundError(f"Process {name} not found")
+            
+            with self._get_process_lock(name):
+                # Get current config
+                current_config = self.get_process_config(name)
+                
+                # Create updated config
+                config_path = self._create_pm2_config(
+                    name=name,
+                    repo_url=current_config['repository']['url'],
+                    script=config_data.get('script', current_config.get('script', 'app.py')),
+                    cron=config_data.get('cron', current_config.get('cron', '')),
+                    auto_restart=config_data.get('auto_restart', current_config.get('auto_restart', True)),
+                    env_vars=config_data.get('env_vars', current_config.get('env_vars', {}))
+                )
+                
+                # Reload the process
+                result = self._run_pm2_deploy_command(name, f"exec pm2 reload {name}")
+                if not result["success"]:
+                    raise PM2CommandError(f"Reload failed: {result['error']}")
+                
+                return {
+                    "message": f"Configuration for {name} updated successfully",
+                    "config_file": str(config_path),
+                    "reload_output": result["output"]
+                }
+            
+        except Exception as e:
+            self.logger.error(f"Failed to update config for {name}: {str(e)}")
             raise
 
     def delete_process(self, name: str) -> Dict:
