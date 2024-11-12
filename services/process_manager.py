@@ -126,8 +126,8 @@ class ProcessManager:
                     ${{venvPath}}/bin/pip install gunicorn && \\
                     if [ -f requirements.txt ]; then \\
                         ${{venvPath}}/bin/pip install -r requirements.txt; \\
-                    fi \\
-                    pm2 start ${{configFile}}``
+                    fi && \\
+                    pm2 start ${{configFile}}`
             }}
         }}
     }};'''
@@ -138,55 +138,8 @@ class ProcessManager:
         
         return config_path
 
-    def _run_command(self, cmd: str, timeout: int = 300) -> Dict:
-        """Run a shell command and handle the response"""
-        try:
-            self.logger.info(f"Running command: {cmd}")
-            
-            # Create a new session for the subprocess
-            start_new_session = True if os.name != 'nt' else False
-            
-            process = subprocess.run(
-                cmd,
-                shell=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=timeout,
-                start_new_session=start_new_session,  # Isolate the subprocess
-                env=dict(os.environ, PM2_SILENT='true')  # Prevent PM2 from sending signals
-            )
-            
-            if process.returncode == 0:
-                output = process.stdout.strip()
-                self.logger.info(f"Command output: {output}")
-                return {
-                    "success": True,
-                    "output": output
-                }
-            else:
-                error_msg = process.stderr.strip()
-                self.logger.error(f"Command failed: {error_msg}")
-                return {
-                    "success": False,
-                    "error": error_msg
-                }
-                
-        except subprocess.TimeoutExpired as e:
-            error_msg = f"Command timed out after {timeout} seconds"
-            self.logger.error(error_msg)
-            return {
-                "success": False,
-                "error": error_msg
-            }
-        except Exception as e:
-            error_msg = str(e)
-            self.logger.error(f"Error running command: {error_msg}")
-            return {
-                "success": False,
-                "error": error_msg
-            }
-    
+
+
     def get_process_config(self, name: str) -> Dict:
         """Get current process configuration"""
         config_path = Path(f"/home/pm2/pm2-configs/{name}.config.js")
@@ -316,8 +269,8 @@ class ProcessManager:
                 stderr=subprocess.PIPE,
                 text=True,
                 timeout=timeout,
-                start_new_session=start_new_session,  # Isolate the subprocess
-                env=dict(os.environ, PM2_SILENT='true')  # Prevent PM2 from sending signals
+                start_new_session=start_new_session,
+                env=dict(os.environ, PM2_SILENT='true')
             )
             
             if process.returncode == 0:
@@ -328,7 +281,7 @@ class ProcessManager:
                     "output": output
                 }
             else:
-                error_msg = process.stderr.strip()
+                error_msg = process.stderr.strip() or process.stdout.strip() or "Unknown error"
                 self.logger.error(f"Command failed: {error_msg}")
                 return {
                     "success": False,
@@ -349,6 +302,7 @@ class ProcessManager:
                 "success": False,
                 "error": error_msg
             }
+
 
     def create_process(self, config_data: Dict) -> Dict:
         """Create a new PM2 process config file and set it up"""
