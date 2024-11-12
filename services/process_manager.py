@@ -85,9 +85,9 @@ class ProcessManager:
     module.exports = {{
         apps: [{{
             name: processName,
-            script: processScript,
+            script: `${{venvPath}}/bin/gunicorn`,
+            args: `app:application --bind ${{envConfig.HOST}}:${{envConfig.PORT}} --chdir ${{processFolder}} --worker-class=gthread --workers=1 --threads=4 --timeout=120`,
             cwd: processFolder,
-            interpreter: `${{venvPath}}/bin/python3`,
             env: envConfig,
             autorestart: autoRestart,
             {f'cron_restart: "{cron}",' if cron and cron.strip() else ''}
@@ -123,11 +123,10 @@ class ProcessManager:
                     git pull origin main && \\
                     python3 -m venv ${{venvPath}} && \\
                     ${{venvPath}}/bin/pip install --upgrade pip && \\
+                    ${{venvPath}}/bin/pip install gunicorn && \\
                     if [ -f requirements.txt ]; then \\
                         ${{venvPath}}/bin/pip install -r requirements.txt; \\
-                    fi && \\
-                    pm2 start ${{configFile}} --env production && \\
-                    pm2 save`
+                    fi`
             }}
         }}
     }};'''
@@ -137,7 +136,6 @@ class ProcessManager:
             f.write(config_content)
         
         return config_path
-
 
     def _run_command(self, cmd: str, timeout: int = 300) -> Dict:
         """Run a shell command and handle the response"""
