@@ -2,5 +2,5 @@ flask
 flask-restx
 apscheduler
 python-dateuti
-Werkzeug=
+Werkzeug
 flask-cors
