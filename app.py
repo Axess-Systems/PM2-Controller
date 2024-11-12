@@ -46,8 +46,6 @@ from api.routes.health import create_health_routes
 from api.routes.logs import create_log_routes
 
 class GracefulShutdown:
-    """Handle graceful shutdown of the application"""
-    
     def __init__(self, app: Flask, logger: logging.Logger):
         self.app = app
         self.logger = logger
@@ -57,8 +55,14 @@ class GracefulShutdown:
 
     def setup_signal_handlers(self):
         """Setup handlers for various signals"""
-        signal.signal(signal.SIGINT, self._handle_shutdown_signal)
-        signal.signal(signal.SIGTERM, self._handle_shutdown_signal)
+        # Only handle signals for explicit shutdown requests
+        def handle_signal(signum, frame):
+            # Only handle if it's the main process and not a subprocess
+            if os.getpid() == os.getpgrp():
+                self._handle_shutdown_signal(signum, frame)
+        
+        signal.signal(signal.SIGINT, handle_signal)
+        signal.signal(signal.SIGTERM, handle_signal)
 
     def _handle_shutdown_signal(self, signum: int, frame):
         """Handle shutdown signals"""
@@ -75,37 +79,7 @@ class GracefulShutdown:
         self.logger.info(f"Received {signal_name}, initiating graceful shutdown...")
         self._shutdown_requested = True
         self.initiate_shutdown()
-
-    def add_shutdown_hook(self, hook):
-        """Add a function to be called during shutdown"""
-        self._shutdown_hooks.append(hook)
-
-    def initiate_shutdown(self):
-        """Perform graceful shutdown"""
-        try:
-            # Execute shutdown hooks
-            for hook in self._shutdown_hooks:
-                try:
-                    hook()
-                except Exception as e:
-                    self.logger.error(f"Error in shutdown hook: {str(e)}")
-
-            self.logger.info("Shutdown hooks completed")
-            
-            # Stop Flask server
-            if self.app:
-                func = self.app.config.get('shutdown_hook')
-                if func:
-                    func()
-                    
-            self.logger.info("Server shutdown completed successfully")
-            
-        except Exception as e:
-            self.logger.error(f"Error during shutdown: {str(e)}")
-        finally:
-            # Exit cleanly
-            sys.exit(0)
-
+        
 def create_app():
     """Create and configure the Flask application"""
     # Initialize Flask app
