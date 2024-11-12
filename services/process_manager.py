@@ -144,42 +144,42 @@ class ProcessManager:
         try:
             self.logger.info(f"Running command: {cmd}")
             
-            # Run command but don't propagate signals to subprocess
-            process = subprocess.Popen(
+            # Create a new session for the subprocess
+            start_new_session = True if os.name != 'nt' else False
+            
+            process = subprocess.run(
                 cmd,
                 shell=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                preexec_fn=os.setsid  # Use new process group
+                timeout=timeout,
+                start_new_session=start_new_session,  # Isolate the subprocess
+                env=dict(os.environ, PM2_SILENT='true')  # Prevent PM2 from sending signals
             )
             
-            try:
-                stdout, stderr = process.communicate(timeout=timeout)
-                if process.returncode == 0:
-                    output = stdout.strip()
-                    self.logger.info(f"Command output: {output}")
-                    return {
-                        "success": True,
-                        "output": output
-                    }
-                else:
-                    error_msg = stderr.strip()
-                    self.logger.error(f"Command failed: {error_msg}")
-                    return {
-                        "success": False,
-                        "error": error_msg
-                    }
-                    
-            except subprocess.TimeoutExpired:
-                os.killpg(process.pid, signal.SIGTERM)  # Kill entire process group
-                error_msg = f"Command timed out after {timeout} seconds"
-                self.logger.error(error_msg)
+            if process.returncode == 0:
+                output = process.stdout.strip()
+                self.logger.info(f"Command output: {output}")
+                return {
+                    "success": True,
+                    "output": output
+                }
+            else:
+                error_msg = process.stderr.strip()
+                self.logger.error(f"Command failed: {error_msg}")
                 return {
                     "success": False,
                     "error": error_msg
                 }
                 
+        except subprocess.TimeoutExpired as e:
+            error_msg = f"Command timed out after {timeout} seconds"
+            self.logger.error(error_msg)
+            return {
+                "success": False,
+                "error": error_msg
+            }
         except Exception as e:
             error_msg = str(e)
             self.logger.error(f"Error running command: {error_msg}")
@@ -198,10 +198,6 @@ class ProcessManager:
             cmd += f" {command}"
         cmd += " --force"
         
-        # Don't interfere with API process
-        if process_name == "PM2Controller":
-            self.logger.info("Deploying API process, using separate process group")
-        
         for attempt in range(max_retries):
             result = self._run_command(cmd)
             if result["success"]:
@@ -213,7 +209,61 @@ class ProcessManager:
         
         return result
 
-
+    def create_process(self, config_data: Dict) -> Dict:
+        """Create a new PM2 process config file and set it up"""
+        try:
+            name = config_data['name']
+            created_config = False
+            
+            # Check if process already exists
+            if Path(f"/home/pm2/pm2-configs/{name}.config.js").exists():
+                raise ProcessAlreadyExistsError(f"Process {name} already exists")
+            
+            # Create config file first
+            config_path = self._create_pm2_config(
+                name=name,
+                repo_url=config_data['repository']['url'],
+                script=config_data.get('script', 'app.py'),
+                cron=config_data.get('cron'),
+                auto_restart=config_data.get('auto_restart', True),
+                env_vars=config_data.get('env_vars')
+            )
+            created_config = True
+            
+            # Run setup and deploy in a single command to avoid intermediate signals
+            self.logger.info(f"Setting up and deploying process {name}...")
+            
+            setup_result = self._run_pm2_deploy_command(name, "setup")
+            if not setup_result["success"]:
+                raise PM2CommandError(f"Setup failed: {setup_result.get('error', 'Unknown error')}")
+            
+            time.sleep(2)
+            
+            deploy_result = self._run_pm2_deploy_command(name)
+            if not deploy_result["success"]:
+                raise PM2CommandError(f"Deployment failed: {deploy_result.get('error', 'Unknown error')}")
+            
+            return {
+                "message": f"Process {name} created and deployed successfully",
+                "config_file": str(config_path),
+                "setup_output": setup_result["output"],
+                "deploy_output": deploy_result["output"]
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Failed to create process {name}: {str(e)}")
+            if created_config:
+                try:
+                    config_path = Path(f"/home/pm2/pm2-configs/{name}.config.js")
+                    if config_path.exists():
+                        config_path.unlink()
+                    process_dir = Path(f"/home/pm2/pm2-processes/{name}")
+                    if process_dir.exists():
+                        shutil.rmtree(process_dir)
+                except Exception as cleanup_error:
+                    self.logger.error(f"Cleanup failed: {str(cleanup_error)}")
+            raise
+        
     def _run_pm2_start_command(self, process_name: str) -> Dict:
         """Run PM2 start command for a process"""
         config_path = f"/home/pm2/pm2-configs/{process_name}.config.js"
