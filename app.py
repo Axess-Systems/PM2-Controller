@@ -46,6 +46,8 @@ from api.routes.health import create_health_routes
 from api.routes.logs import create_log_routes
 
 class GracefulShutdown:
+    """Handle graceful shutdown of the application"""
+    
     def __init__(self, app: Flask, logger: logging.Logger):
         self.app = app
         self.logger = logger
@@ -55,7 +57,6 @@ class GracefulShutdown:
 
     def setup_signal_handlers(self):
         """Setup handlers for various signals"""
-        # Only handle signals for explicit shutdown requests
         def handle_signal(signum, frame):
             # Only handle if it's the main process and not a subprocess
             if os.getpid() == os.getpgrp():
@@ -75,11 +76,42 @@ class GracefulShutdown:
         if self._shutdown_requested:
             self.logger.warning(f"Received second {signal_name}, forcing immediate shutdown")
             sys.exit(1)
-            
-        self.logger.info(f"Received {signal_name}, initiating graceful shutdown...")
-        self._shutdown_requested = True
-        self.initiate_shutdown()
         
+        self._shutdown_requested = True
+        self.logger.info(f"Received {signal_name}, initiating graceful shutdown...")
+        self.initiate_shutdown()
+
+    def add_shutdown_hook(self, hook):
+        """Add a function to be called during shutdown"""
+        if callable(hook):
+            self._shutdown_hooks.append(hook)
+
+    def initiate_shutdown(self):
+        """Perform graceful shutdown"""
+        try:
+            # Execute shutdown hooks
+            for hook in self._shutdown_hooks:
+                try:
+                    hook()
+                except Exception as e:
+                    self.logger.error(f"Error in shutdown hook: {str(e)}")
+
+            self.logger.info("Shutdown hooks completed")
+            
+            # Stop Flask server
+            if self.app:
+                func = self.app.config.get('shutdown_hook')
+                if func:
+                    func()
+                    
+            self.logger.info("Server shutdown completed successfully")
+            
+        except Exception as e:
+            self.logger.error(f"Error during shutdown: {str(e)}")
+        finally:
+            # Exit cleanly
+            sys.exit(0)
+
 def create_app():
     """Create and configure the Flask application"""
     # Initialize Flask app
@@ -155,19 +187,6 @@ def create_app():
     create_health_routes(health_ns, services)
     create_log_routes(logs_ns, services)
     
-    # Setup shutdown manager
-    shutdown_manager = GracefulShutdown(app, logger)
-    
-    # Add cleanup hooks
-    def cleanup_hook():
-        logger.info("Cleaning up resources...")
-        # Add any cleanup tasks here
-    
-    shutdown_manager.add_shutdown_hook(cleanup_hook)
-    
-    # Store shutdown manager in app config
-    app.config['shutdown_manager'] = shutdown_manager
-    
     return app
 
 def main():
@@ -177,13 +196,13 @@ def main():
     
     try:
         logger.info("Starting PM2 Controller API")
-        # Use Werkzeug development server with graceful shutdown support
+        # Use Werkzeug development server without reloader
         from werkzeug.serving import run_simple
         run_simple(
             hostname=config.HOST,
             port=config.PORT,
             application=app,
-            use_reloader=config.DEBUG,
+            use_reloader=False,  # Disable reloader
             use_debugger=config.DEBUG,
             threaded=True
         )
