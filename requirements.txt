@@ -1,6 +1,6 @@
 flask
 flask-restx
 apscheduler
-python-dateuti
+python-dateutil==2.8.2
 Werkzeug
 flask-cors
