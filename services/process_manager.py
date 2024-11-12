@@ -126,7 +126,8 @@ class ProcessManager:
                     ${{venvPath}}/bin/pip install gunicorn && \\
                     if [ -f requirements.txt ]; then \\
                         ${{venvPath}}/bin/pip install -r requirements.txt; \\
-                    fi`
+                    fi \\
+                    pm2 start ${{configFile}}``
             }}
         }}
     }};'''
@@ -264,23 +265,11 @@ class ProcessManager:
         
     def _run_pm2_start_command(self, process_name: str) -> Dict:
         """Run PM2 start command for a process"""
-        config_path = f"/home/pm2/pm2-configs/{process_name}.config.js"
+
         
-        # First, try to delete if exists (ignore errors)
-        delete_cmd = f"pm2 delete {process_name} || true"
-        self._run_command(delete_cmd, timeout=30)
+    
         
-        # Then start the process
-        start_cmd = f"pm2 start {config_path}"
-        result = self._run_command(start_cmd, timeout=30)
-        
-        # If successful, save PM2 configuration
-        if result["success"]:
-            save_result = self._run_command("pm2 save", timeout=30)
-            if not save_result["success"]:
-                self.logger.warning("Failed to save PM2 configuration")
-        
-        return result
+        return 
 
     def create_process(self, config_data: Dict) -> Dict:
         """Create a new PM2 process config file and set it up"""
