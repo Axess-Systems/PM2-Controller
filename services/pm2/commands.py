@@ -1,6 +1,5 @@
 # services/pm2/commands.py
 
-import os
 import json
 import time
 import subprocess

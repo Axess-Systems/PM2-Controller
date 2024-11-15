@@ -11,7 +11,6 @@ class ProcessNotFoundError(PM2Error):
 class ProcessAlreadyExistsError(PM2Error):
     """Raised when trying to create a process that already exists"""
     pass
-
 class PM2CommandError(PM2Error):
     """Raised when a PM2 command fails"""
     pass
