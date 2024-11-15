@@ -139,62 +139,136 @@ class ProcessDeployer(Process):
             })   
     
        
-    def _run_command(self, cmd: str, label: str) -> Dict:
-        """Run command and capture output with error handling"""
-        process = subprocess.Popen(
-            cmd,
-            shell=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-            universal_newlines=True
-        )
+    def run(self):
+        """Execute deployment process"""
+        try:
+            # Create directories
+            base_path = Path("/home/pm2")
+            config_dir = base_path / "pm2-configs"
+            process_dir = base_path / "pm2-processes" / self.name
+            logs_dir = process_dir / "logs"
 
-        stdout_lines = []
-        stderr_lines = []
-        error_detected = False
-        error_message = None
+            config_dir.mkdir(parents=True, exist_ok=True)
+            process_dir.mkdir(parents=True, exist_ok=True)
+            logs_dir.mkdir(parents=True, exist_ok=True)
 
-        while True:
-            # Read stdout
-            stdout_line = process.stdout.readline()
-            if stdout_line:
-                line = stdout_line.strip()
-                self.logger.info(f"[{label}] {line}")
-                stdout_lines.append(line)
-                # Check for error indicators in stdout
-                if "error" in line.lower() or "failed" in line.lower():
-                    error_detected = True
-                    error_message = line
+            # Create config file 
+            config_path = self.pm2_service.config_generator.generate_config(
+                name=self.name,
+                repo_url=self.config_data['repository']['url'],
+                script=self.config_data.get('script', 'app.py'),
+                cron=self.config_data.get('cron'),
+                auto_restart=self.config_data.get('auto_restart', True),
+                env_vars=self.config_data.get('env_vars')
+            )
 
-            # Read stderr
-            stderr_line = process.stderr.readline()
-            if stderr_line:
-                line = stderr_line.strip()
-                self.logger.error(f"[{label} Error] {line}")
-                stderr_lines.append(line)
-                error_detected = True
-                error_message = line
+            # Run setup
+            self.logger.info(f"Starting setup for {self.name}")
+            setup_result = self._run_command(
+                f"pm2 deploy {config_path} production setup --force",
+                "Setup"
+            )
+            
+            if not setup_result.get('success'):
+                error_message = (
+                    f"Setup failed:\n"
+                    f"Error: {setup_result.get('error', 'Unknown error')}\n"
+                    f"Return Code: {setup_result.get('returncode', 'N/A')}\n"
+                    f"STDOUT: {setup_result.get('stdout', '')}\n"
+                    f"STDERR: {setup_result.get('stderr', '')}"
+                )
+                raise PM2CommandError(error_message)
 
-            # Check if process has finished
-            if process.poll() is not None:
-                break
+            # Verify setup
+            if not Path(f"{process_dir}/source").exists():
+                error_message = (
+                    f"Setup completed but source directory not created:\n"
+                    f"STDOUT: {setup_result.get('stdout', '')}\n"
+                    f"STDERR: {setup_result.get('stderr', '')}"
+                )
+                raise PM2CommandError(error_message)
 
-        # Get any remaining output
-        remaining_stdout, remaining_stderr = process.communicate()
-        if remaining_stdout:
-            stdout_lines.extend(remaining_stdout.splitlines())
-        if remaining_stderr:
-            stderr_lines.extend(remaining_stderr.splitlines())
+            # Run deploy
+            self.logger.info(f"Starting deployment for {self.name}")
+            deploy_result = self._run_command(
+                f"pm2 deploy {config_path} production --force",
+                "Deploy"
+            )
+            
+            if not deploy_result.get('success'):
+                error_message = (
+                    f"Deploy failed:\n"
+                    f"Error: {deploy_result.get('error', 'Unknown error')}\n"
+                    f"Return Code: {deploy_result.get('returncode', 'N/A')}\n"
+                    f"STDOUT: {deploy_result.get('stdout', '')}\n"
+                    f"STDERR: {deploy_result.get('stderr', '')}"
+                )
+                raise PM2CommandError(error_message)
 
-        success = process.returncode == 0 and not error_detected
-        return {
-            'success': success,
-            'stdout': '\n'.join(stdout_lines),
-            'stderr': '\n'.join(stderr_lines),
-            'error': error_message if not success else None
-        }
+            # Verify deployment
+            status_result = self._check_process_status()
+            if not status_result.get('success'):
+                error_message = (
+                    f"Process verification failed:\n"
+                    f"Status Error: {status_result.get('error', 'Unknown error')}\n"
+                    f"Deploy STDOUT: {deploy_result.get('stdout', '')}\n"
+                    f"Deploy STDERR: {deploy_result.get('stderr', '')}"
+                )
+                raise PM2CommandError(error_message)
+
+            # Check if process is actually running
+            jlist_result = subprocess.run(
+                "pm2 jlist",
+                shell=True,
+                capture_output=True,
+                text=True
+            )
+            
+            if jlist_result.returncode == 0:
+                try:
+                    processes = json.loads(jlist_result.stdout)
+                    process = next((p for p in processes if p['name'] == self.name), None)
+                    
+                    if not process:
+                        error_message = (
+                            f"Process {self.name} not found in PM2 process list after deployment:\n"
+                            f"Deploy STDOUT: {deploy_result.get('stdout', '')}\n"
+                            f"Deploy STDERR: {deploy_result.get('stderr', '')}"
+                        )
+                        raise PM2CommandError(error_message)
+                        
+                    if process.get('pm2_env', {}).get('status') != 'online':
+                        error_message = (
+                            f"Process {self.name} is not running:\n"
+                            f"Status: {process.get('pm2_env', {}).get('status', 'unknown')}\n"
+                            f"Deploy STDOUT: {deploy_result.get('stdout', '')}\n"
+                            f"Deploy STDERR: {deploy_result.get('stderr', '')}"
+                        )
+                        raise PM2CommandError(error_message)
+                        
+                except json.JSONDecodeError:
+                    error_message = f"Failed to parse PM2 process list:\nPM2 output: {jlist_result.stdout}"
+                    raise PM2CommandError(error_message)
+
+            self.result_queue.put({
+                "success": True,
+                "message": f"Process {self.name} created and deployed successfully",
+                "config_file": str(config_path),
+                "setup_output": setup_result.get('stdout', ''),
+                "deploy_output": deploy_result.get('stdout', '')
+            })
+
+        except Exception as e:
+            self.logger.error(f"Deployment failed: {str(e)}")
+            error_details = self._get_error_details()
+            self._cleanup()
+            self.result_queue.put({
+                "success": False,
+                "message": f"Failed to deploy process {self.name}",
+                "error": str(e),
+                "error_details": error_details
+            })
+
 
     def _check_process_status(self) -> Dict:
         """Check if process is running correctly"""
