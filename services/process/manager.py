@@ -49,25 +49,47 @@ class ProcessManager:
             deployer.join()
 
     def delete_process(self, name: str) -> Dict:
+        """Delete a process and its configuration"""
         try:
-            process = self.pm2_service.get_process(name)
-            if process.get('pm2_env', {}).get('status') == 'online':
-                raise PM2CommandError(
-                    f"Process {name} is running. Stop it first with 'pm2 stop {name}'"
-                )
-            
-            self.pm2_service.commands.execute(f"delete {name}")
-            
-            # Cleanup files
-            for path in [
-                Path(f"/home/pm2/pm2-configs/{name}.config.js"),
-                Path(f"/home/pm2/pm2-processes/{name}")
-            ]:
-                if path.exists():
-                    path.unlink() if path.is_file() else shutil.rmtree(path)
-            
-            return {"message": f"Process {name} deleted successfully"}
-            
+            config_path = Path(f"/home/pm2/pm2-configs/{name}.config.js")
+            process_dir = Path(f"/home/pm2/pm2-processes/{name}")
+                
+            # Try to delete from PM2 if running
+            try:
+                process_info = json.loads(subprocess.run(
+                    f"{self.config.PM2_BIN} jlist",
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    check=True
+                ).stdout)
+                
+                process = next((p for p in process_info if p['name'] == name), None)
+                if process:
+                    if process.get('pm2_env', {}).get('status') == 'online':
+                        raise PM2CommandError(
+                            f"Process {name} is currently running. Stop it first using 'pm2 stop {name}'"
+                        )
+                    # Process exists in PM2, delete it
+                    subprocess.run(
+                        f"pm2 delete {name}",
+                        shell=True,
+                        check=True,
+                        capture_output=True
+                    )
+            except (subprocess.CalledProcessError, json.JSONDecodeError):
+                self.logger.warning(f"Process {name} was not running in PM2")
+                
+            # Always cleanup files
+            if config_path.exists():
+                config_path.unlink()
+            if process_dir.exists():
+                shutil.rmtree(process_dir)
+                
+            return {
+                "message": f"Process {name} deleted successfully"
+            }
+                
         except Exception as e:
-            self.logger.error(f"Failed to delete {name}: {str(e)}")
+            self.logger.error(f"Failed to delete process {name}: {str(e)}")
             raise

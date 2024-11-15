@@ -29,3 +29,5 @@ def parse_pm2_error(error_message: str) -> Exception:
         return ProcessAlreadyExistsError(error_message)
     else:
         return PM2CommandError(error_message)
+    
+    
