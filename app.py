@@ -1,3 +1,4 @@
+# app.py
 import os
 import sys
 from pathlib import Path
@@ -8,10 +9,9 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 from core.config import Config
 from core.logging import setup_logging
-from services.pm2 import PM2Service
-from services.process_manager import ProcessManager
+from services.pm2.service import PM2Service 
+from services.process.manager import ProcessManager
 from services.log_manager import LogManager
-from services.pm2.service import PM2Service  # Use direct import instead of from services.pm2
 from api.models.process import create_api_models
 from api.models.error import create_error_models
 from api.routes.processes import create_process_routes
