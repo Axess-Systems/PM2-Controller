@@ -85,7 +85,7 @@ class ProcessManager:
     module.exports = {{
         apps: [{{
             name: processName,
-            script: `${{venvPath}}/bin/gunicorn`,
+            script: processScript,
             args: `app:application --bind ${{envConfig.HOST}}:${{envConfig.PORT}} --chdir ${{processFolder}} --worker-class=gthread --workers=1 --threads=4 --timeout=120`,
             cwd: processFolder,
             env: envConfig,
@@ -123,7 +123,6 @@ class ProcessManager:
                     git pull origin main && \\
                     python3 -m venv ${{venvPath}} && \\
                     ${{venvPath}}/bin/pip install --upgrade pip && \\
-                    ${{venvPath}}/bin/pip install gunicorn && \\
                     if [ -f requirements.txt ]; then \\
                         ${{venvPath}}/bin/pip install -r requirements.txt; \\
                     fi && \\
@@ -227,32 +226,52 @@ class ProcessManager:
         """Delete a process and its configuration"""
         try:
             with self._get_process_lock(name):
-                config_path = Path(f"/home/pm2/pm2-configs/{name}.config.js")
-                process_dir = Path(f"/home/pm2/pm2-processes/{name}")
-                
-                # Delete from PM2
-                cmd = f"pm2 delete {name}"
+                # First check if process exists and is running
                 try:
-                    subprocess.run(cmd, shell=True, check=True, capture_output=True, text=True)
-                except subprocess.CalledProcessError:
-                    self.logger.warning(f"Process {name} was not running in PM2")
+                    process_info = json.loads(subprocess.run(
+                        f"{self.config.PM2_BIN} jlist",
+                        shell=True,
+                        capture_output=True,
+                        text=True,
+                        check=True
+                    ).stdout)
+                    
+                    # Find our process
+                    process = next((p for p in process_info if p['name'] == name), None)
+                    if process and process.get('pm2_env', {}).get('status') == 'online':
+                        raise PM2CommandError(
+                            f"Process {name} is currently running. Please stop it first using 'pm2 stop {name}'"
+                        )
+                    
+                    config_path = Path(f"/home/pm2/pm2-configs/{name}.config.js")
+                    process_dir = Path(f"/home/pm2/pm2-processes/{name}")
+                    
+                    # Delete from PM2
+                    cmd = f"pm2 delete {name}"
+                    try:
+                        subprocess.run(cmd, shell=True, check=True, capture_output=True, text=True)
+                    except subprocess.CalledProcessError:
+                        self.logger.warning(f"Process {name} was not running in PM2")
+                    
+                    # Remove config file
+                    if config_path.exists():
+                        config_path.unlink()
+                    
+                    # Remove process directory
+                    if process_dir.exists():
+                        shutil.rmtree(process_dir)
+                    
+                    return {
+                        "message": f"Process {name} deleted successfully"
+                    }
+                    
+                except subprocess.CalledProcessError as e:
+                    self.logger.error(f"Error checking PM2 process status: {str(e)}")
+                    raise PM2CommandError(f"Failed to check process status: {str(e)}")
                 
-                # Remove config file
-                if config_path.exists():
-                    config_path.unlink()
-                
-                # Remove process directory
-                if process_dir.exists():
-                    shutil.rmtree(process_dir)
-                
-                return {
-                    "message": f"Process {name} deleted successfully"
-                }
-            
         except Exception as e:
             self.logger.error(f"Failed to delete process {name}: {str(e)}")
-            raise
-        
+            raise  
         
     def _run_command(self, cmd: str, timeout: int = 300) -> Dict:
         """Run a shell command and handle the response"""

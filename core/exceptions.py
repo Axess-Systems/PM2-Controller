@@ -1,3 +1,5 @@
+# /core/exceptions.py
+
 class PM2Error(Exception):
     """Base exception for PM2 related errors"""
     pass

@@ -1,3 +1,5 @@
+# /api/models/error.py
+
 from flask_restx import fields
 
 def create_error_models(api):
