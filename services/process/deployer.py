@@ -1,6 +1,9 @@
 # services/process/deployer.py
 import os
 import time
+import errno
+from select import select
+import fcntl
 import shutil
 import logging
 import subprocess
@@ -119,8 +122,12 @@ class ProcessDeployer(Process):
                 "error_details": error_details
             })
 
-    def run_command(self, cmd: str, label: str) -> Dict:
-        """Run command and capture output with error handling"""
+    def run_command(self, cmd: str, label: str, timeout: int = 300) -> Dict:
+        """Run command and capture output with error handling and timeout"""
+        from select import select
+        import fcntl
+        import os
+
         process = subprocess.Popen(
             cmd,
             shell=True,
@@ -131,50 +138,87 @@ class ProcessDeployer(Process):
             universal_newlines=True
         )
 
+        # Set non-blocking mode for pipes
+        for pipe in [process.stdout, process.stderr]:
+            flags = fcntl.fcntl(pipe.fileno(), fcntl.F_GETFL)
+            fcntl.fcntl(pipe.fileno(), fcntl.F_SETFL, flags | os.O_NONBLOCK)
+
         stdout_lines = []
         stderr_lines = []
         error_detected = False
         error_message = None
+        
+        start_time = time.time()
 
         while True:
-            # Read stdout
-            stdout_line = process.stdout.readline()
-            if stdout_line:
-                line = stdout_line.strip()
-                self.logger.info(f"[{label}] {line}")
-                stdout_lines.append(line)
-                # Check for specific error messages
-                if any(x in line.lower() for x in [
-                    "error",
-                    "failed",
-                    "not found",
-                    "cannot access",
-                    "permission denied",
-                    "fatal"
-                ]) and "Cloning into" not in line:
-                    error_detected = True
-                    error_message = line
+            # Check timeout
+            if time.time() - start_time > timeout:
+                process.terminate()
+                return {
+                    'success': False,
+                    'stdout': '\n'.join(stdout_lines),
+                    'stderr': '\n'.join(stderr_lines),
+                    'error': f'Command timed out after {timeout} seconds',
+                    'returncode': -1
+                }
 
-            # Read stderr
-            stderr_line = process.stderr.readline()
-            if stderr_line:
-                line = stderr_line.strip()
-                if "Cloning into" not in line:
-                    self.logger.error(f"[{label} Error] {line}")
-                    stderr_lines.append(line)
-                    error_detected = True
-                    error_message = line
+            # Wait for output with timeout
+            reads = [process.stdout.fileno(), process.stderr.fileno()]
+            ready_reads, _, _ = select(reads, [], [], 1.0)
+
+            try:
+                # Handle stdout
+                if process.stdout.fileno() in ready_reads:
+                    line = process.stdout.readline()
+                    if line:
+                        line = line.strip()
+                        self.logger.info(f"[{label}] {line}")
+                        stdout_lines.append(line)
+                        # Check for specific error messages
+                        if any(x in line.lower() for x in [
+                            "error",
+                            "failed",
+                            "not found",
+                            "cannot access",
+                            "permission denied",
+                            "fatal"
+                        ]) and "Cloning into" not in line:
+                            error_detected = True
+                            error_message = line
+
+                # Handle stderr
+                if process.stderr.fileno() in ready_reads:
+                    line = process.stderr.readline()
+                    if line:
+                        line = line.strip()
+                        if "Cloning into" not in line:
+                            self.logger.error(f"[{label} Error] {line}")
+                            stderr_lines.append(line)
+                            error_detected = True
+                            error_message = line
+
+            except (IOError, OSError) as e:
+                # Handle pipe errors
+                if e.errno != errno.EAGAIN:
+                    self.logger.error(f"Pipe error: {str(e)}")
+                    break
 
             # Check if process has finished
             if process.poll() is not None:
+                # Read any remaining output
+                try:
+                    remaining_stdout = process.stdout.read()
+                    if remaining_stdout:
+                        stdout_lines.extend(remaining_stdout.splitlines())
+                    remaining_stderr = process.stderr.read()
+                    if remaining_stderr:
+                        stderr_lines.extend(remaining_stderr.splitlines())
+                except:
+                    pass
                 break
 
-        # Get remaining output
-        remaining_stdout, remaining_stderr = process.communicate()
-        if remaining_stdout:
-            stdout_lines.extend(remaining_stdout.splitlines())
-        if remaining_stderr:
-            stderr_lines.extend(remaining_stderr.splitlines())
+            # Small sleep to prevent CPU thrashing
+            time.sleep(0.1)
 
         return {
             'success': process.returncode == 0 and not error_detected,
@@ -183,7 +227,7 @@ class ProcessDeployer(Process):
             'error': error_message if error_detected else None,
             'returncode': process.returncode
         }
-
+    
     def check_process_status(self) -> Dict:
         """Check if process is running correctly"""
         try:
