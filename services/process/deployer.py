@@ -123,10 +123,15 @@ class ProcessDeployer(Process):
             })
 
     def run_command(self, cmd: str, label: str, timeout: int = 300) -> Dict:
-        """Run command and capture output with error handling and timeout"""
-        from select import select
-        import fcntl
-        import os
+        """Run command and capture output with error handling"""
+        from threading import Thread
+        from queue import Queue, Empty
+        import io
+
+        def enqueue_output(out, queue):
+            for line in iter(out.readline, b''):
+                queue.put(line)
+            out.close()
 
         process = subprocess.Popen(
             cmd,
@@ -134,20 +139,22 @@ class ProcessDeployer(Process):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            bufsize=1,
-            universal_newlines=True
+            bufsize=1
         )
 
-        # Set non-blocking mode for pipes
-        for pipe in [process.stdout, process.stderr]:
-            flags = fcntl.fcntl(pipe.fileno(), fcntl.F_GETFL)
-            fcntl.fcntl(pipe.fileno(), fcntl.F_SETFL, flags | os.O_NONBLOCK)
+        stdout_queue = Queue()
+        stderr_queue = Queue()
+        stdout_thread = Thread(target=enqueue_output, args=(process.stdout, stdout_queue))
+        stderr_thread = Thread(target=enqueue_output, args=(process.stderr, stderr_queue))
+        stdout_thread.daemon = True
+        stderr_thread.daemon = True
+        stdout_thread.start()
+        stderr_thread.start()
 
         stdout_lines = []
         stderr_lines = []
         error_detected = False
         error_message = None
-        
         start_time = time.time()
 
         while True:
@@ -162,19 +169,17 @@ class ProcessDeployer(Process):
                     'returncode': -1
                 }
 
-            # Wait for output with timeout
-            reads = [process.stdout.fileno(), process.stderr.fileno()]
-            ready_reads, _, _ = select(reads, [], [], 1.0)
+            # Check if process has finished
+            if process.poll() is not None:
+                break
 
+            # Read from queues
             try:
-                # Handle stdout
-                if process.stdout.fileno() in ready_reads:
-                    line = process.stdout.readline()
-                    if line:
-                        line = line.strip()
+                while True:
+                    try:
+                        line = stdout_queue.get_nowait().strip()
                         self.logger.info(f"[{label}] {line}")
                         stdout_lines.append(line)
-                        # Check for specific error messages
                         if any(x in line.lower() for x in [
                             "error",
                             "failed",
@@ -185,40 +190,43 @@ class ProcessDeployer(Process):
                         ]) and "Cloning into" not in line:
                             error_detected = True
                             error_message = line
+                    except Empty:
+                        break
 
-                # Handle stderr
-                if process.stderr.fileno() in ready_reads:
-                    line = process.stderr.readline()
-                    if line:
-                        line = line.strip()
+                while True:
+                    try:
+                        line = stderr_queue.get_nowait().strip()
                         if "Cloning into" not in line:
                             self.logger.error(f"[{label} Error] {line}")
                             stderr_lines.append(line)
                             error_detected = True
                             error_message = line
+                    except Empty:
+                        break
 
-            except (IOError, OSError) as e:
-                # Handle pipe errors
-                if e.errno != errno.EAGAIN:
-                    self.logger.error(f"Pipe error: {str(e)}")
-                    break
+            except Exception as e:
+                self.logger.error(f"Error reading output: {str(e)}")
 
-            # Check if process has finished
-            if process.poll() is not None:
-                # Read any remaining output
-                try:
-                    remaining_stdout = process.stdout.read()
-                    if remaining_stdout:
-                        stdout_lines.extend(remaining_stdout.splitlines())
-                    remaining_stderr = process.stderr.read()
-                    if remaining_stderr:
-                        stderr_lines.extend(remaining_stderr.splitlines())
-                except:
-                    pass
-                break
-
-            # Small sleep to prevent CPU thrashing
             time.sleep(0.1)
+
+        # Wait for output threads to finish
+        stdout_thread.join(1)
+        stderr_thread.join(1)
+
+        # Read any remaining output
+        try:
+            while True:
+                line = stdout_queue.get_nowait().strip()
+                stdout_lines.append(line)
+        except Empty:
+            pass
+
+        try:
+            while True:
+                line = stderr_queue.get_nowait().strip()
+                stderr_lines.append(line)
+        except Empty:
+            pass
 
         return {
             'success': process.returncode == 0 and not error_detected,
@@ -227,7 +235,8 @@ class ProcessDeployer(Process):
             'error': error_message if error_detected else None,
             'returncode': process.returncode
         }
-    
+
+
     def check_process_status(self) -> Dict:
         """Check if process is running correctly"""
         try:
