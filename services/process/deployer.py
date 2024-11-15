@@ -6,6 +6,8 @@ from select import select
 import fcntl
 import shutil
 import logging
+import asyncio
+import sys
 import subprocess
 import json
 from pathlib import Path
@@ -122,45 +124,75 @@ class ProcessDeployer(Process):
                 "error_details": error_details
             })
 
+
     def run_command(self, cmd: str, label: str, timeout: int = 300) -> Dict:
-        """Run command and capture output with error handling"""
-        from threading import Thread
-        from queue import Queue, Empty
-        import io
+        """Run command synchronously but use asyncio for output handling"""
+        import asyncio
+        import sys
 
-        def enqueue_output(out, queue):
-            for line in iter(out.readline, b''):
-                queue.put(line)
-            out.close()
+        # Get the event loop
+        if sys.platform == 'win32':
+            loop = asyncio.ProactorEventLoop()
+        else:
+            loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
 
-        process = subprocess.Popen(
-            cmd,
-            shell=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1
-        )
+        async def _run_command():
+            process = await asyncio.create_subprocess_shell(
+                cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
 
-        stdout_queue = Queue()
-        stderr_queue = Queue()
-        stdout_thread = Thread(target=enqueue_output, args=(process.stdout, stdout_queue))
-        stderr_thread = Thread(target=enqueue_output, args=(process.stderr, stderr_queue))
-        stdout_thread.daemon = True
-        stderr_thread.daemon = True
-        stdout_thread.start()
-        stderr_thread.start()
+            stdout_lines = []
+            stderr_lines = []
+            error_detected = False
+            error_message = None
 
-        stdout_lines = []
-        stderr_lines = []
-        error_detected = False
-        error_message = None
-        start_time = time.time()
+            async def read_stream(stream, is_stderr):
+                while True:
+                    line = await stream.readline()
+                    if not line:
+                        break
+                    line = line.decode().strip()
+                    if line:
+                        if is_stderr:
+                            if "Cloning into" not in line:
+                                self.logger.error(f"[{label} Error] {line}")
+                                stderr_lines.append(line)
+                                nonlocal error_detected, error_message
+                                error_detected = True
+                                error_message = line
+                        else:
+                            self.logger.info(f"[{label}] {line}")
+                            stdout_lines.append(line)
+                            if any(x in line.lower() for x in [
+                                "error",
+                                "failed",
+                                "not found",
+                                "cannot access",
+                                "permission denied",
+                                "fatal"
+                            ]) and "Cloning into" not in line:
+                                nonlocal error_detected, error_message
+                                error_detected = True
+                                error_message = line
 
-        while True:
-            # Check timeout
-            if time.time() - start_time > timeout:
-                process.terminate()
+            try:
+                # Read both streams concurrently with timeout
+                await asyncio.wait_for(
+                    asyncio.gather(
+                        read_stream(process.stdout, False),
+                        read_stream(process.stderr, True)
+                    ),
+                    timeout=timeout
+                )
+            except asyncio.TimeoutError:
+                try:
+                    process.terminate()
+                    await process.wait()
+                except:
+                    pass
                 return {
                     'success': False,
                     'stdout': '\n'.join(stdout_lines),
@@ -169,72 +201,21 @@ class ProcessDeployer(Process):
                     'returncode': -1
                 }
 
-            # Check if process has finished
-            if process.poll() is not None:
-                break
+            # Wait for process to complete
+            returncode = await process.wait()
 
-            # Read from queues
-            try:
-                while True:
-                    try:
-                        line = stdout_queue.get_nowait().strip()
-                        self.logger.info(f"[{label}] {line}")
-                        stdout_lines.append(line)
-                        if any(x in line.lower() for x in [
-                            "error",
-                            "failed",
-                            "not found",
-                            "cannot access",
-                            "permission denied",
-                            "fatal"
-                        ]) and "Cloning into" not in line:
-                            error_detected = True
-                            error_message = line
-                    except Empty:
-                        break
-
-                while True:
-                    try:
-                        line = stderr_queue.get_nowait().strip()
-                        if "Cloning into" not in line:
-                            self.logger.error(f"[{label} Error] {line}")
-                            stderr_lines.append(line)
-                            error_detected = True
-                            error_message = line
-                    except Empty:
-                        break
-
-            except Exception as e:
-                self.logger.error(f"Error reading output: {str(e)}")
-
-            time.sleep(0.1)
-
-        # Wait for output threads to finish
-        stdout_thread.join(1)
-        stderr_thread.join(1)
-
-        # Read any remaining output
-        try:
-            while True:
-                line = stdout_queue.get_nowait().strip()
-                stdout_lines.append(line)
-        except Empty:
-            pass
+            return {
+                'success': returncode == 0 and not error_detected,
+                'stdout': '\n'.join(stdout_lines),
+                'stderr': '\n'.join(stderr_lines),
+                'error': error_message if error_detected else None,
+                'returncode': returncode
+            }
 
         try:
-            while True:
-                line = stderr_queue.get_nowait().strip()
-                stderr_lines.append(line)
-        except Empty:
-            pass
-
-        return {
-            'success': process.returncode == 0 and not error_detected,
-            'stdout': '\n'.join(stdout_lines),
-            'stderr': '\n'.join(stderr_lines),
-            'error': error_message if error_detected else None,
-            'returncode': process.returncode
-        }
+            return loop.run_until_complete(_run_command())
+        finally:
+            loop.close()
 
 
     def check_process_status(self) -> Dict:
