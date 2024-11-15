@@ -12,6 +12,8 @@ import logging
 from core.config import Config
 from core.exceptions import ProcessNotFoundError, ProcessAlreadyExistsError, PM2CommandError
 from services.pm2.service import PM2Service
+from .deployer import ProcessDeployer  
+
 class ProcessManager:
     def __init__(self, config: Config, logger: logging.Logger):
         self.config = config

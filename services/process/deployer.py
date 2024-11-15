@@ -1,12 +1,14 @@
+# services/process/deployer.py 
 from multiprocessing import Process, Queue
 from queue import Empty
 from typing import Dict
 import logging
 import time
 from pathlib import Path
-from core.config import Config
+import shutil
+from core.config import Config 
 from core.exceptions import PM2CommandError
-from services.pm2.service import PM2Service
+from services.pm2.service import PM2Servic
 
 class ProcessDeployer(Process):
     def __init__(self, config: Config, name: str, config_data: Dict, result_queue: Queue, logger: logging.Logger):
