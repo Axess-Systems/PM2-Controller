@@ -1,12 +1,9 @@
 # services/pm2/config.py
-
-from typing import Dict, Optional
-from pathlib import Path
 import logging
+from pathlib import Path
+from typing import Dict, Optional
 
 class PM2Config:
-    """Handles PM2 configuration file generation and management"""
-    
     def __init__(self, logger: logging.Logger):
         self.logger = logger
 
@@ -19,9 +16,10 @@ class PM2Config:
         auto_restart: bool = True,
         env_vars: Optional[Dict[str, str]] = None
     ) -> Path:
-        """Generate PM2 config file with the specified template"""
+        """Generate PM2 config file"""
         config_path = Path(f"/home/pm2/pm2-configs/{name}.config.js")
         
+        # Use provided env vars or defaults
         default_env = {
             "PORT": "5001",
             "HOST": "0.0.0.0",
@@ -39,26 +37,7 @@ class PM2Config:
 
         env_config_str = ',\n    '.join(f'{key}: "{value}"' for key, value in default_env.items())
         
-        config_content = self._get_config_template(
-            name=name,
-            repo_url=repo_url,
-            script=script,
-            cron=cron,
-            auto_restart=auto_restart,
-            env_config_str=env_config_str
-        )
-
-        self.logger.debug(f"Creating PM2 config at {config_path}")
-        with open(config_path, 'w') as f:
-            f.write(config_content)
-        
-        return config_path
-
-    def _get_config_template(self, name: str, repo_url: str, script: str,
-                           cron: Optional[str], auto_restart: bool,
-                           env_config_str: str) -> str:
-        """Get the PM2 config file template"""
-        return f'''// Process Configuration
+        config_content = f'''// Process Configuration
     const processName = '{name}';
     const repoUrl = '{repo_url}';
     const processScript = `{script}`;
@@ -122,3 +101,9 @@ class PM2Config:
             }}
         }}
     }};'''
+
+        self.logger.debug(f"Creating PM2 config at {config_path}")
+        with open(config_path, 'w') as f:
+            f.write(config_content)
+
+        return config_path
