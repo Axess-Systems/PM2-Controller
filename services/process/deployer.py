@@ -23,7 +23,103 @@ class ProcessDeployer(Process):
         self.logger = logger
         self.pm2_service = PM2Service(config, logger)
 
-    def _run_command(self, cmd: str, label: str) -> Dict:
+    def run(self):
+        """Execute deployment process"""
+        try:
+            # Create directories
+            base_path = Path("/home/pm2")
+            config_dir = base_path / "pm2-configs"
+            process_dir = base_path / "pm2-processes" / self.name
+            logs_dir = process_dir / "logs"
+
+            config_dir.mkdir(parents=True, exist_ok=True)
+            process_dir.mkdir(parents=True, exist_ok=True)
+            logs_dir.mkdir(parents=True, exist_ok=True)
+
+            # Create config file 
+            config_path = self.pm2_service.config_generator.generate_config(
+                name=self.name,
+                repo_url=self.config_data['repository']['url'],
+                script=self.config_data.get('script', 'app.py'),
+                cron=self.config_data.get('cron'),
+                auto_restart=self.config_data.get('auto_restart', True),
+                env_vars=self.config_data.get('env_vars')
+            )
+
+            # Run setup
+            self.logger.info(f"Starting setup for {self.name}")
+            setup_result = self.run_command(
+                f"pm2 deploy {config_path} production setup --force",
+                "Setup"
+            )
+            
+            if not setup_result.get('success'):
+                error_message = (
+                    f"Setup failed:\n"
+                    f"Error: {setup_result.get('error', 'Unknown error')}\n"
+                    f"Return Code: {setup_result.get('returncode', 'N/A')}\n"
+                    f"STDOUT: {setup_result.get('stdout', '')}\n"
+                    f"STDERR: {setup_result.get('stderr', '')}"
+                )
+                raise PM2CommandError(error_message)
+
+            # Verify setup
+            if not Path(f"{process_dir}/source").exists():
+                error_message = (
+                    f"Setup completed but source directory not created:\n"
+                    f"STDOUT: {setup_result.get('stdout', '')}\n"
+                    f"STDERR: {setup_result.get('stderr', '')}"
+                )
+                raise PM2CommandError(error_message)
+
+            # Run deploy
+            self.logger.info(f"Starting deployment for {self.name}")
+            deploy_result = self.run_command(
+                f"pm2 deploy {config_path} production --force",
+                "Deploy"
+            )
+            
+            if not deploy_result.get('success'):
+                error_message = (
+                    f"Deploy failed:\n"
+                    f"Error: {deploy_result.get('error', 'Unknown error')}\n"
+                    f"Return Code: {deploy_result.get('returncode', 'N/A')}\n"
+                    f"STDOUT: {deploy_result.get('stdout', '')}\n"
+                    f"STDERR: {deploy_result.get('stderr', '')}"
+                )
+                raise PM2CommandError(error_message)
+
+            # Verify process is running
+            status_result = self.check_process_status()
+            if not status_result.get('success'):
+                error_message = (
+                    f"Process verification failed:\n"
+                    f"Error: {status_result.get('error', 'Unknown error')}\n"
+                    f"Deploy STDOUT: {deploy_result.get('stdout', '')}\n"
+                    f"Deploy STDERR: {deploy_result.get('stderr', '')}"
+                )
+                raise PM2CommandError(error_message)
+
+            self.result_queue.put({
+                "success": True,
+                "message": f"Process {self.name} created and deployed successfully",
+                "config_file": str(config_path),
+                "setup_output": setup_result.get('stdout', ''),
+                "deploy_output": deploy_result.get('stdout', '')
+            })
+
+        except Exception as e:
+            self.logger.error(f"Deployment failed: {str(e)}")
+            error_details = self.get_error_details()
+            self.cleanup()
+            self.result_queue.put({
+                "success": False,
+                "message": f"Failed to deploy process {self.name}",
+                "error": str(e),
+                "error_details": error_details
+            })
+
+    def run_command(self, cmd: str, label: str) -> Dict:
         """Run command and capture output with error handling"""
         process = subprocess.Popen(
             cmd,
@@ -55,7 +151,7 @@ class ProcessDeployer(Process):
                     "cannot access",
                     "permission denied",
                     "fatal"
-                ]):
+                ]) and "Cloning into" not in line:
                     error_detected = True
                     error_message = line
 
@@ -63,7 +159,6 @@ class ProcessDeployer(Process):
             stderr_line = process.stderr.readline()
             if stderr_line:
                 line = stderr_line.strip()
-                # Don't treat git clone messages as errors
                 if "Cloning into" not in line:
                     self.logger.error(f"[{label} Error] {line}")
                     stderr_lines.append(line)
@@ -89,7 +184,7 @@ class ProcessDeployer(Process):
             'returncode': process.returncode
         }
 
-    def _check_process_status(self) -> Dict:
+    def check_process_status(self) -> Dict:
         """Check if process is running correctly"""
         try:
             result = subprocess.run(
@@ -121,7 +216,7 @@ class ProcessDeployer(Process):
                 'error': f"Error checking process status: {str(e)}"
             }
 
-    def _get_error_details(self) -> str:
+    def get_error_details(self) -> str:
         """Get error details from logs"""
         try:
             result = subprocess.run(
@@ -134,7 +229,7 @@ class ProcessDeployer(Process):
         except Exception as e:
             return f"Error getting logs: {str(e)}"
 
-    def _cleanup(self):
+    def cleanup(self):
         """Clean up resources on failure"""
         try:
             # Try to stop and delete the PM2 process
