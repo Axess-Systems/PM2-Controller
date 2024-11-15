@@ -8,7 +8,7 @@ from pathlib import Path
 import shutil
 from core.config import Config 
 from core.exceptions import PM2CommandError
-from services.pm2.service import PM2Servic
+from services.pm2.service import PM2Service
 
 class ProcessDeployer(Process):
     def __init__(self, config: Config, name: str, config_data: Dict, result_queue: Queue, logger: logging.Logger):
