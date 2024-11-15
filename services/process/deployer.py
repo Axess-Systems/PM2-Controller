@@ -3,6 +3,8 @@ import os
 import time
 import shutil
 import logging
+import asyncio
+import signal
 import subprocess
 from pathlib import Path
 from typing import Dict
@@ -21,10 +23,15 @@ class ProcessDeployer(Process):
         self.result_queue = result_queue
         self.logger = logger
         self.pm2_service = PM2Service(config, logger)
+        self._process = None
 
     def run(self):
         """Execute deployment process"""
         try:
+            # Set up signal handlers
+            signal.signal(signal.SIGINT, self._signal_handler)
+            signal.signal(signal.SIGTERM, self._signal_handler)
+
             # Ensure directories exist first
             base_path = Path("/home/pm2")
             config_dir = base_path / "pm2-configs"
@@ -46,10 +53,10 @@ class ProcessDeployer(Process):
             )
 
             # Run setup with retries
-            setup_result = self._run_command(
+            setup_result = asyncio.run(self._run_command_async(
                 f"pm2 deploy {config_path} production setup --force",
                 timeout=300
-            )
+            ))
             if not setup_result["success"]:
                 raise PM2CommandError(f"Setup failed: {setup_result['error']}")
 
@@ -57,10 +64,10 @@ class ProcessDeployer(Process):
             time.sleep(2)
 
             # Run deploy with retries
-            deploy_result = self._run_command(
+            deploy_result = asyncio.run(self._run_command_async(
                 f"pm2 deploy {config_path} production --force",
                 timeout=300
-            )
+            ))
             if not deploy_result["success"]:
                 raise PM2CommandError(f"Deploy failed: {deploy_result['error']}")
 
@@ -81,46 +88,69 @@ class ProcessDeployer(Process):
                 "error": str(e)
             })
 
-    def _run_command(self, cmd: str, timeout: int = 300, max_retries: int = 3) -> Dict:
-        """Execute command with retries and timeout"""
+    async def _run_command_async(self, cmd: str, timeout: int = 300, max_retries: int = 3) -> Dict:
+        """Execute command with retries and timeout using asyncio"""
         last_error = None
         
         for attempt in range(max_retries):
             try:
                 self.logger.info(f"Running command (attempt {attempt + 1}/{max_retries}): {cmd}")
-                result = subprocess.run(
+                
+                process = await asyncio.create_subprocess_shell(
                     cmd,
-                    shell=True,
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
                     env=dict(os.environ, PM2_SILENT='true')
                 )
-                return {
-                    "success": True,
-                    "output": result.stdout.strip()
-                }
-
-            except subprocess.TimeoutExpired as e:
-                last_error = f"Command timed out after {timeout} seconds"
-                self.logger.error(f"Command timeout (attempt {attempt + 1}/{max_retries})")
-
-            except subprocess.CalledProcessError as e:
-                last_error = e.stderr.strip() or e.stdout.strip() or str(e)
-                self.logger.error(f"Command failed (attempt {attempt + 1}/{max_retries}): {last_error}")
+                
+                self._process = process
+                
+                try:
+                    stdout, stderr = await asyncio.wait_for(
+                        process.communicate(),
+                        timeout=timeout
+                    )
+                    
+                    if process.returncode == 0:
+                        return {
+                            "success": True,
+                            "output": stdout.decode().strip()
+                        }
+                    else:
+                        last_error = stderr.decode().strip() or stdout.decode().strip()
+                        self.logger.error(f"Command failed (attempt {attempt + 1}/{max_retries}): {last_error}")
+                
+                except asyncio.TimeoutError:
+                    if process.returncode is None:
+                        process.terminate()
+                        await process.wait()
+                    last_error = f"Command timed out after {timeout} seconds"
+                    self.logger.error(f"Command timeout (attempt {attempt + 1}/{max_retries})")
 
             except Exception as e:
                 last_error = str(e)
                 self.logger.error(f"Unexpected error (attempt {attempt + 1}/{max_retries}): {last_error}")
 
             if attempt < max_retries - 1:
-                time.sleep(5)
+                await asyncio.sleep(5)
 
         return {
             "success": False,
             "error": last_error or "Command failed after all retries"
         }
+
+    def _signal_handler(self, signum, frame):
+        """Handle termination signals"""
+        self.logger.info(f"Received signal {signum}, cleaning up...")
+        if self._process and self._process.returncode is None:
+            self._process.terminate()
+        self._cleanup()
+        self.result_queue.put({
+            "success": False,
+            "message": f"Process {self.name} deployment interrupted",
+            "error": "Deployment interrupted by signal"
+        })
+        os._exit(1)
 
     def _cleanup(self):
         """Clean up resources on failure"""
