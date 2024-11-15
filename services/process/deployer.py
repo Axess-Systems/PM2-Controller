@@ -4,6 +4,7 @@ import time
 import shutil
 import logging
 import subprocess
+import json
 from pathlib import Path
 from typing import Dict, Optional
 from multiprocessing import Process, Queue
@@ -45,41 +46,76 @@ class ProcessDeployer(Process):
                 env_vars=self.config_data.get('env_vars')
             )
 
-            # Create deployment script
-            script_path = self._create_deployment_script(config_path)
-            
-            # Run setup and deploy in background
-            deploy_log = process_dir / "deploy.log"
-            deploy_cmd = f"nohup bash {script_path} > {deploy_log} 2>&1 &"
-            
-            # Start deployment
-            self.logger.info(f"Starting deployment for {self.name}")
-            subprocess.run(deploy_cmd, shell=True, check=True)
+            # Execute setup in background
+            setup_proc = subprocess.Popen(
+                f"pm2 deploy {config_path} production setup --force",
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                preexec_fn=os.setsid,  # Run in new process group
+                universal_newlines=True
+            )
 
-            # Monitor deployment log for completion
-            start_time = time.time()
-            timeout = 600  # 10 minutes
-            success = False
-
-            while (time.time() - start_time) < timeout:
-                if deploy_log.exists():
-                    log_content = deploy_log.read_text()
-                    self.logger.info(f"[Deployment Log] {log_content}")
-                    
-                    if "Deployment completed" in log_content:
-                        success = True
-                        break
-                    elif "Deployment failed" in log_content:
-                        break
+            # Monitor setup process
+            while True:
+                return_code = setup_proc.poll()
                 
-                time.sleep(5)
+                # Process stdout/stderr
+                if setup_proc.stdout:
+                    line = setup_proc.stdout.readline()
+                    if line:
+                        self.logger.info(f"[Setup] {line.strip()}")
+                if setup_proc.stderr:
+                    line = setup_proc.stderr.readline()
+                    if line:
+                        self.logger.error(f"[Setup Error] {line.strip()}")
 
-            if not success:
-                raise PM2CommandError(f"Deployment failed or timed out. Check {deploy_log} for details")
+                if return_code is not None:
+                    if return_code != 0:
+                        raise PM2CommandError("Setup failed")
+                    break
 
-            # Verify deployment
-            if not self._verify_deployment():
-                raise PM2CommandError("Deployment verification failed")
+            # Execute deploy in background
+            deploy_proc = subprocess.Popen(
+                f"pm2 deploy {config_path} production --force",
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                preexec_fn=os.setsid,
+                universal_newlines=True
+            )
+
+            # Monitor deploy process
+            while True:
+                return_code = deploy_proc.poll()
+                
+                # Process stdout/stderr
+                if deploy_proc.stdout:
+                    line = deploy_proc.stdout.readline()
+                    if line:
+                        self.logger.info(f"[Deploy] {line.strip()}")
+                if deploy_proc.stderr:
+                    line = deploy_proc.stderr.readline()
+                    if line:
+                        self.logger.error(f"[Deploy Error] {line.strip()}")
+
+                if return_code is not None:
+                    if return_code != 0:
+                        raise PM2CommandError("Deploy failed")
+                    break
+
+            # Verify process is running
+            verify_cmd = f"pm2 jlist"
+            verify_result = subprocess.run(verify_cmd, shell=True, capture_output=True, text=True)
+            
+            if verify_result.returncode != 0:
+                raise PM2CommandError("Failed to verify process status")
+                
+            processes = json.loads(verify_result.stdout)
+            process = next((p for p in processes if p['name'] == self.name), None)
+            
+            if not process:
+                raise PM2CommandError(f"Process {self.name} not found after deployment")
 
             self.result_queue.put({
                 "success": True,
@@ -96,64 +132,9 @@ class ProcessDeployer(Process):
                 "error": str(e)
             })
 
-    def _create_deployment_script(self, config_path: Path) -> Path:
-        """Create deployment script"""
-        script_path = Path(f"/home/pm2/pm2-configs/{self.name}_deploy.sh")
-        
-        script_content = f"""#!/bin/bash
-set -e
-
-echo "Starting deployment for {self.name} at $(date)"
-
-# Setup phase
-echo "Running setup..."
-pm2 deploy {config_path} production setup --force
-if [ $? -ne 0 ]; then
-    echo "Deployment failed during setup"
-    exit 1
-fi
-
-# Short delay
-sleep 2
-
-# Deploy phase
-echo "Running deploy..."
-pm2 deploy {config_path} production --force
-if [ $? -ne 0 ]; then
-    echo "Deployment failed during deploy"
-    exit 1
-fi
-
-echo "Deployment completed successfully at $(date)"
-"""
-        
-        script_path.write_text(script_content)
-        script_path.chmod(0o755)
-        return script_path
-
-    def _verify_deployment(self) -> bool:
-        """Verify deployment success"""
-        try:
-            result = subprocess.run(
-                f"pm2 show {self.name}",
-                shell=True,
-                capture_output=True,
-                text=True
-            )
-            return result.returncode == 0
-        except Exception as e:
-            self.logger.error(f"Deployment verification failed: {str(e)}")
-            return False
-
     def _cleanup(self):
         """Clean up resources"""
         try:
-            # Clean up script and logs
-            script_path = Path(f"/home/pm2/pm2-configs/{self.name}_deploy.sh")
-            if script_path.exists():
-                script_path.unlink()
-
-            # Clean up process files
             for path in [
                 Path(f"/home/pm2/pm2-configs/{self.name}.config.js"),
                 Path(f"/home/pm2/pm2-processes/{self.name}")
