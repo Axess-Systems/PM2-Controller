@@ -17,24 +17,22 @@ class PM2Service:
         self.logger = logger
         self.commands = PM2Commands(config, logger)
         self.config_generator = PM2Config(logger)
-    
-    def list_processes(self) -> List[Dict]:
-        """Get list of all PM2 processes with enhanced information"""
-        processes = self.commands.execute("jlist")
-        
-        for process in processes:
-            try:
-                pm2_config = Path(f"/home/pm2/pm2-configs/{process['name']}.config.js")
-                python_config = Path(f"/home/pm2/pm2-configs/{process['name']}.ini")
-                
-                process['config_files'] = {
-                    'pm2_config': str(pm2_config) if pm2_config.exists() else None,
-                    'python_config': str(python_config) if python_config.exists() else None
-                }
-            except Exception as e:
-                self.logger.warning(f"Error getting config paths for {process['name']}: {str(e)}")
-        
-        return processes
+       
+    def run_pm2_deploy_command(self, process_name: str, command: str = "") -> Dict:
+        config_path = f"/home/pm2/pm2-configs/{process_name}.config.js"
+        cmd = f"pm2 deploy {config_path} production"
+        if command:
+            cmd += f" {command}"
+        cmd += " --force"
+       
+        for attempt in range(3):
+            result = self.commands.execute(cmd)
+            if result["success"]:
+                return result
+            if attempt < 2:
+                self.logger.warning(f"Retrying command... ({attempt + 1}/3)")
+                time.sleep(5)
+        return result
 
     def get_process(self, name: str) -> Dict:
         """Get details of a specific process"""
