@@ -1,16 +1,15 @@
-# services/process/deployer.py
 import os
 import time
 import shutil
 import logging
 import subprocess
-import threading
 from pathlib import Path
 from typing import Dict
 from multiprocessing import Process, Queue
 from core.config import Config
 from core.exceptions import PM2CommandError
 from services.pm2.service import PM2Service
+import select
 
 class ProcessDeployer(Process):
     def __init__(self, config: Config, name: str, config_data: Dict, result_queue: Queue, logger: logging.Logger):
@@ -25,7 +24,6 @@ class ProcessDeployer(Process):
     def run(self):
         """Execute deployment process"""
         try:
-            # Create directories
             base_path = Path("/home/pm2")
             config_dir = base_path / "pm2-configs"
             process_dir = base_path / "pm2-processes" / self.name
@@ -35,7 +33,6 @@ class ProcessDeployer(Process):
             process_dir.mkdir(parents=True, exist_ok=True)
             logs_dir.mkdir(parents=True, exist_ok=True)
 
-            # Create config file 
             config_path = self.pm2_service.config_generator.generate_config(
                 name=self.name,
                 repo_url=self.config_data['repository']['url'],
@@ -45,20 +42,21 @@ class ProcessDeployer(Process):
                 env_vars=self.config_data.get('env_vars')
             )
 
-            # Run setup and deploy
             setup_result = self.run_command(
                 f"pm2 deploy {config_path} production setup --force",
-                "Setup"
+                "Setup",
+                timeout=60
             )
-            
+
             if not setup_result.get('success'):
                 raise PM2CommandError(f"Setup failed: {setup_result.get('error')}")
 
             deploy_result = self.run_command(
                 f"pm2 deploy {config_path} production --force",
-                "Deploy"
+                "Deploy",
+                timeout=60
             )
-            
+
             if not deploy_result.get('success'):
                 raise PM2CommandError(f"Deploy failed: {deploy_result.get('error')}")
 
@@ -77,74 +75,57 @@ class ProcessDeployer(Process):
                 "error": str(e)
             })
 
-    def run_command(self, cmd: str, label: str) -> Dict:
-        """Run command and capture output"""
+    def read_nonblocking(self, stream):
+        """Read non-blocking from a subprocess stream."""
+        outputs = []
+        while True:
+            ready, _, _ = select.select([stream], [], [], 0.1)
+            if stream in ready:
+                line = stream.readline()
+                if line:
+                    outputs.append(line.strip())
+                else:
+                    break
+        return outputs
+
+    def run_command(self, cmd: str, label: str, timeout: int = 60) -> Dict:
+        """Run command with timeout and non-blocking I/O."""
         try:
-            self.logger.info(f"Running command: {cmd}")
             process = subprocess.Popen(
-                cmd,
-                shell=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                bufsize=1,
-                env=dict(os.environ, PM2_SILENT='true')
+                cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
             )
+            start_time = time.time()
+            stdout_lines, stderr_lines = [], []
 
-            error_detected = False
-            error_message = None
+            while True:
+                if time.time() - start_time > timeout:
+                    process.terminate()
+                    return {"success": False, "error": f"Timeout after {timeout} seconds"}
 
-            try:
-                while True:
-                    # Read stdout
-                    stdout_line = process.stdout.readline()
-                    if stdout_line:
-                        line = stdout_line.strip()
-                        if line:
-                            self.logger.info(f"[{label}] {line}")
+                stdout_lines.extend(self.read_nonblocking(process.stdout))
+                stderr_lines.extend(self.read_nonblocking(process.stderr))
 
-                    # Read stderr
-                    stderr_line = process.stderr.readline()
-                    if stderr_line:
-                        line = stderr_line.strip()
-                        if line and "Cloning into" not in line:
-                            self.logger.error(f"[{label} Error] {line}")
-                            error_detected = True
-                            error_message = line
+                if process.poll() is not None:
+                    break
 
-                    # Check if process has finished
-                    if process.poll() is not None:
-                        break
+                time.sleep(0.1)
 
-                    # Small sleep to prevent CPU thrashing
-                    time.sleep(0.1)
+            success = process.returncode == 0
+            for line in stdout_lines:
+                self.logger.info(f"[{label}] {line}")
+            for line in stderr_lines:
+                self.logger.error(f"[{label} Error] {line}")
 
-                return {
-                    'success': process.returncode == 0 and not error_detected,
-                    'error': error_message if error_detected else None
-                }
-
-            except Exception as e:
-                process.kill()
-                return {
-                    'success': False,
-                    'error': str(e)
-                }
+            return {"success": success, "error": stderr_lines[-1] if not success else None}
 
         except Exception as e:
-            return {
-                'success': False,
-                'error': str(e)
-            }
-
+            self.logger.error(f"Command execution failed: {str(e)}")
+            return {"success": False, "error": str(e)}
 
     def cleanup(self):
         """Clean up resources on failure"""
         try:
-            # Stop and delete PM2 process
             subprocess.run(f"pm2 delete {self.name}", shell=True, check=False)
-
-            # Clean up files
             for path in [
                 Path(f"/home/pm2/pm2-configs/{self.name}.config.js"),
                 Path(f"/home/pm2/pm2-processes/{self.name}")
