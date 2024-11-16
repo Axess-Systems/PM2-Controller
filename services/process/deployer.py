@@ -126,97 +126,117 @@ class ProcessDeployer(Process):
 
 
     def run_command(self, cmd: str, label: str, timeout: int = 300) -> Dict:
-        """Run command synchronously but use asyncio for output handling"""
-        import asyncio
-        import sys
+        """Run command and capture output"""
+        import subprocess
+        import threading
+        from queue import Queue
 
-        # Get the event loop
-        if sys.platform == 'win32':
-            loop = asyncio.ProactorEventLoop()
-        else:
-            loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+        # Create queues for output collection
+        stdout_queue = Queue()
+        stderr_queue = Queue()
+        error_detected = False
+        error_message = None
 
-        async def _run_command():
-            process = await asyncio.create_subprocess_shell(
-                cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-
-            stdout_lines = []
-            stderr_lines = []
-            error_detected = False
-            error_message = None
-
-            async def read_stream(stream, is_stderr):
-                while True:
-                    line = await stream.readline()
-                    if not line:
-                        break
-                    line = line.decode().strip()
-                    if line:
+        def read_output(pipe, queue, is_stderr):
+            """Read output from pipe to queue"""
+            try:
+                for line in iter(pipe.readline, ''):
+                    stripped = line.strip()
+                    if stripped:
                         if is_stderr:
-                            if "Cloning into" not in line:
-                                self.logger.error(f"[{label} Error] {line}")
-                                stderr_lines.append(line)
+                            if "Cloning into" not in stripped:
+                                self.logger.error(f"[{label} Error] {stripped}")
+                                queue.put(stripped)
                                 nonlocal error_detected, error_message
                                 error_detected = True
-                                error_message = line
+                                error_message = stripped
                         else:
-                            self.logger.info(f"[{label}] {line}")
-                            stdout_lines.append(line)
-                            if any(x in line.lower() for x in [
+                            self.logger.info(f"[{label}] {stripped}")
+                            queue.put(stripped)
+                            if any(x in stripped.lower() for x in [
                                 "error",
                                 "failed",
                                 "not found",
                                 "cannot access",
                                 "permission denied",
                                 "fatal"
-                            ]) and "Cloning into" not in line:
+                            ]) and "Cloning into" not in stripped:
                                 nonlocal error_detected, error_message
                                 error_detected = True
-                                error_message = line
+                                error_message = stripped
+            finally:
+                pipe.close()
 
+        try:
+            # Start the process
+            process = subprocess.Popen(
+                cmd,
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1
+            )
+
+            # Start output reader threads
+            stdout_thread = threading.Thread(
+                target=read_output, 
+                args=(process.stdout, stdout_queue, False)
+            )
+            stderr_thread = threading.Thread(
+                target=read_output, 
+                args=(process.stderr, stderr_queue, True)
+            )
+
+            stdout_thread.daemon = True
+            stderr_thread.daemon = True
+            stdout_thread.start()
+            stderr_thread.start()
+
+            # Wait for process to complete
             try:
-                # Read both streams concurrently with timeout
-                await asyncio.wait_for(
-                    asyncio.gather(
-                        read_stream(process.stdout, False),
-                        read_stream(process.stderr, True)
-                    ),
-                    timeout=timeout
-                )
-            except asyncio.TimeoutError:
-                try:
-                    process.terminate()
-                    await process.wait()
-                except:
-                    pass
+                process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                process.terminate()
                 return {
                     'success': False,
-                    'stdout': '\n'.join(stdout_lines),
-                    'stderr': '\n'.join(stderr_lines),
+                    'stdout': '',
+                    'stderr': '',
                     'error': f'Command timed out after {timeout} seconds',
                     'returncode': -1
                 }
 
-            # Wait for process to complete
-            returncode = await process.wait()
+            # Wait for output threads to complete
+            stdout_thread.join(1)
+            stderr_thread.join(1)
+
+            # Collect output
+            stdout_lines = []
+            stderr_lines = []
+
+            while not stdout_queue.empty():
+                stdout_lines.append(stdout_queue.get_nowait())
+            while not stderr_queue.empty():
+                stderr_lines.append(stderr_queue.get_nowait())
 
             return {
-                'success': returncode == 0 and not error_detected,
+                'success': process.returncode == 0 and not error_detected,
                 'stdout': '\n'.join(stdout_lines),
                 'stderr': '\n'.join(stderr_lines),
                 'error': error_message if error_detected else None,
-                'returncode': returncode
+                'returncode': process.returncode
             }
 
-        try:
-            return loop.run_until_complete(_run_command())
-        finally:
-            loop.close()
-
+        except Exception as e:
+            self.logger.error(f"Command failed: {str(e)}")
+            return {
+                'success': False,
+                'stdout': '',
+                'stderr': str(e),
+                'error': str(e),
+                'returncode': -1
+            }
+        
 
     def check_process_status(self) -> Dict:
         """Check if process is running correctly"""
