@@ -4,6 +4,7 @@ import shutil
 import logging
 import subprocess
 import json
+import threading
 from pathlib import Path
 from typing import Dict, Optional
 from multiprocessing import Process, Queue
@@ -11,7 +12,6 @@ from queue import Empty
 from core.config import Config
 from core.exceptions import PM2CommandError
 from services.pm2.service import PM2Service
-
 class ProcessDeployer(Process):
     def __init__(self, config: Config, name: str, config_data: Dict, result_queue: Queue, logger: logging.Logger):
         super().__init__()
