@@ -78,7 +78,7 @@ class ProcessDeployer(Process):
             })
 
     def run_command(self, cmd: str, label: str) -> Dict:
-        """Run command with non-blocking output handling"""
+        """Run command and capture output"""
         try:
             self.logger.info(f"Running command: {cmd}")
             process = subprocess.Popen(
@@ -86,71 +86,50 @@ class ProcessDeployer(Process):
                 shell=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
                 env=dict(os.environ, PM2_SILENT='true')
             )
 
-            stdout_data = []
-            stderr_data = []
             error_detected = False
             error_message = None
 
-            # Set pipes to non-blocking mode
-            for pipe in [process.stdout, process.stderr]:
-                flags = fcntl.fcntl(pipe.fileno(), fcntl.F_GETFL)
-                fcntl.fcntl(pipe.fileno(), fcntl.F_SETFL, flags | os.O_NONBLOCK)
+            try:
+                while True:
+                    # Read stdout
+                    stdout_line = process.stdout.readline()
+                    if stdout_line:
+                        line = stdout_line.strip()
+                        if line:
+                            self.logger.info(f"[{label}] {line}")
 
-            while process.poll() is None:
-                # Read from stdout
-                try:
-                    stdout = process.stdout.read().decode()
-                    if stdout:
-                        lines = stdout.splitlines()
-                        for line in lines:
-                            if line.strip():
-                                self.logger.info(f"[{label}] {line.strip()}")
-                                stdout_data.append(line.strip())
-                except (IOError, BlockingIOError):
-                    pass
+                    # Read stderr
+                    stderr_line = process.stderr.readline()
+                    if stderr_line:
+                        line = stderr_line.strip()
+                        if line and "Cloning into" not in line:
+                            self.logger.error(f"[{label} Error] {line}")
+                            error_detected = True
+                            error_message = line
 
-                # Read from stderr
-                try:
-                    stderr = process.stderr.read().decode()
-                    if stderr:
-                        lines = stderr.splitlines()
-                        for line in lines:
-                            if line.strip() and "Cloning into" not in line:
-                                self.logger.error(f"[{label} Error] {line.strip()}")
-                                stderr_data.append(line.strip())
-                                error_detected = True
-                                error_message = line.strip()
-                except (IOError, BlockingIOError):
-                    pass
+                    # Check if process has finished
+                    if process.poll() is not None:
+                        break
 
-                # Short sleep to prevent CPU thrashing
-                time.sleep(0.1)
+                    # Small sleep to prevent CPU thrashing
+                    time.sleep(0.1)
 
-            # Get any remaining output
-            stdout, stderr = process.communicate()
-            if stdout:
-                lines = stdout.decode().splitlines()
-                for line in lines:
-                    if line.strip():
-                        self.logger.info(f"[{label}] {line.strip()}")
-                        stdout_data.append(line.strip())
-            if stderr:
-                lines = stderr.decode().splitlines()
-                for line in lines:
-                    if line.strip() and "Cloning into" not in line:
-                        self.logger.error(f"[{label} Error] {line.strip()}")
-                        stderr_data.append(line.strip())
-                        error_detected = True
-                        error_message = line.strip()
+                return {
+                    'success': process.returncode == 0 and not error_detected,
+                    'error': error_message if error_detected else None
+                }
 
-            success = process.returncode == 0 and not error_detected
-            return {
-                'success': success,
-                'error': error_message if not success else None
-            }
+            except Exception as e:
+                process.kill()
+                return {
+                    'success': False,
+                    'error': str(e)
+                }
 
         except Exception as e:
             return {
