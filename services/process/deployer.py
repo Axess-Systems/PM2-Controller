@@ -78,46 +78,86 @@ class ProcessDeployer(Process):
             })
 
     def run_command(self, cmd: str, label: str) -> Dict:
-        """Run command and capture output"""
+        """Run command with non-blocking output handling"""
         try:
             self.logger.info(f"Running command: {cmd}")
-            result = subprocess.run(
+            process = subprocess.Popen(
                 cmd,
                 shell=True,
-                capture_output=True,
-                text=True,
-                timeout=300
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=dict(os.environ, PM2_SILENT='true')
             )
 
-            # Log output
-            for line in result.stdout.splitlines():
-                if line.strip():
-                    self.logger.info(f"[{label}] {line.strip()}")
-            
-            # Log errors
+            stdout_data = []
+            stderr_data = []
             error_detected = False
             error_message = None
-            for line in result.stderr.splitlines():
-                if line.strip() and "Cloning into" not in line:
-                    self.logger.error(f"[{label} Error] {line.strip()}")
-                    error_detected = True
-                    error_message = line.strip()
 
+            # Set pipes to non-blocking mode
+            for pipe in [process.stdout, process.stderr]:
+                flags = fcntl.fcntl(pipe.fileno(), fcntl.F_GETFL)
+                fcntl.fcntl(pipe.fileno(), fcntl.F_SETFL, flags | os.O_NONBLOCK)
+
+            while process.poll() is None:
+                # Read from stdout
+                try:
+                    stdout = process.stdout.read().decode()
+                    if stdout:
+                        lines = stdout.splitlines()
+                        for line in lines:
+                            if line.strip():
+                                self.logger.info(f"[{label}] {line.strip()}")
+                                stdout_data.append(line.strip())
+                except (IOError, BlockingIOError):
+                    pass
+
+                # Read from stderr
+                try:
+                    stderr = process.stderr.read().decode()
+                    if stderr:
+                        lines = stderr.splitlines()
+                        for line in lines:
+                            if line.strip() and "Cloning into" not in line:
+                                self.logger.error(f"[{label} Error] {line.strip()}")
+                                stderr_data.append(line.strip())
+                                error_detected = True
+                                error_message = line.strip()
+                except (IOError, BlockingIOError):
+                    pass
+
+                # Short sleep to prevent CPU thrashing
+                time.sleep(0.1)
+
+            # Get any remaining output
+            stdout, stderr = process.communicate()
+            if stdout:
+                lines = stdout.decode().splitlines()
+                for line in lines:
+                    if line.strip():
+                        self.logger.info(f"[{label}] {line.strip()}")
+                        stdout_data.append(line.strip())
+            if stderr:
+                lines = stderr.decode().splitlines()
+                for line in lines:
+                    if line.strip() and "Cloning into" not in line:
+                        self.logger.error(f"[{label} Error] {line.strip()}")
+                        stderr_data.append(line.strip())
+                        error_detected = True
+                        error_message = line.strip()
+
+            success = process.returncode == 0 and not error_detected
             return {
-                'success': result.returncode == 0 and not error_detected,
-                'error': error_message if error_detected else None
+                'success': success,
+                'error': error_message if not success else None
             }
 
-        except subprocess.TimeoutExpired:
-            return {
-                'success': False,
-                'error': 'Command timed out after 300 seconds'
-            }
         except Exception as e:
             return {
                 'success': False,
                 'error': str(e)
             }
+
 
     def cleanup(self):
         """Clean up resources on failure"""
