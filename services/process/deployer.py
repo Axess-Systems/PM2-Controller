@@ -1,13 +1,7 @@
-# services/process/deployer.py
 import os
 import time
-import errno
-from select import select
-import fcntl
 import shutil
 import logging
-import asyncio
-import sys
 import subprocess
 import json
 from pathlib import Path
@@ -69,9 +63,10 @@ class ProcessDeployer(Process):
                 raise PM2CommandError(error_message)
 
             # Verify setup
-            if not Path(f"{process_dir}/source").exists():
+            source_dir = process_dir / "source"
+            if not source_dir.exists():
                 error_message = (
-                    f"Setup completed but source directory not created:\n"
+                    f"Setup completed but source directory not created at {source_dir}:\n"
                     f"STDOUT: {setup_result.get('stdout', '')}\n"
                     f"STDERR: {setup_result.get('stderr', '')}"
                 )
@@ -94,7 +89,7 @@ class ProcessDeployer(Process):
                 )
                 raise PM2CommandError(error_message)
 
-            # Verify process is running
+            # Verify deployment
             status_result = self.check_process_status()
             if not status_result.get('success'):
                 error_message = (
@@ -124,19 +119,18 @@ class ProcessDeployer(Process):
                 "error_details": error_details
             })
 
-
     def run_command(self, cmd: str, label: str, timeout: int = 300) -> Dict:
         """Run command and capture output"""
-        import subprocess
-        import threading
-        from queue import Queue
+        # Shared state for output tracking
+        class OutputState:
+            def __init__(self):
+                self.error_detected = False
+                self.error_message = None
+                self.stdout_lines = []
+                self.stderr_lines = []
 
-        # Create queues for output collection
-        stdout_queue = Queue()
-        stderr_queue = Queue()
-        error_detected = False
-        error_message = None
-
+        state = OutputState()
+        
         def read_output(pipe, queue, is_stderr):
             """Read output from pipe to queue"""
             try:
@@ -144,15 +138,16 @@ class ProcessDeployer(Process):
                     stripped = line.strip()
                     if stripped:
                         if is_stderr:
+                            # Don't treat git clone messages as errors
                             if "Cloning into" not in stripped:
                                 self.logger.error(f"[{label} Error] {stripped}")
                                 queue.put(stripped)
-                                nonlocal error_detected, error_message
-                                error_detected = True
-                                error_message = stripped
+                                state.error_detected = True
+                                state.error_message = stripped
                         else:
                             self.logger.info(f"[{label}] {stripped}")
                             queue.put(stripped)
+                            # Check for error indicators in output
                             if any(x in stripped.lower() for x in [
                                 "error",
                                 "failed",
@@ -161,9 +156,10 @@ class ProcessDeployer(Process):
                                 "permission denied",
                                 "fatal"
                             ]) and "Cloning into" not in stripped:
-                                nonlocal error_detected, error_message
-                                error_detected = True
-                                error_message = stripped
+                                state.error_detected = True
+                                state.error_message = stripped
+            except Exception as e:
+                self.logger.error(f"Error reading output: {str(e)}")
             finally:
                 pipe.close()
 
@@ -178,13 +174,17 @@ class ProcessDeployer(Process):
                 bufsize=1
             )
 
+            # Set up output collection
+            stdout_queue = Queue()
+            stderr_queue = Queue()
+
             # Start output reader threads
             stdout_thread = threading.Thread(
-                target=read_output, 
+                target=read_output,
                 args=(process.stdout, stdout_queue, False)
             )
             stderr_thread = threading.Thread(
-                target=read_output, 
+                target=read_output,
                 args=(process.stderr, stderr_queue, True)
             )
 
@@ -193,7 +193,7 @@ class ProcessDeployer(Process):
             stdout_thread.start()
             stderr_thread.start()
 
-            # Wait for process to complete
+            # Wait for process with timeout
             try:
                 process.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
@@ -210,7 +210,7 @@ class ProcessDeployer(Process):
             stdout_thread.join(1)
             stderr_thread.join(1)
 
-            # Collect output
+            # Collect all output
             stdout_lines = []
             stderr_lines = []
 
@@ -220,10 +220,10 @@ class ProcessDeployer(Process):
                 stderr_lines.append(stderr_queue.get_nowait())
 
             return {
-                'success': process.returncode == 0 and not error_detected,
+                'success': process.returncode == 0 and not state.error_detected,
                 'stdout': '\n'.join(stdout_lines),
                 'stderr': '\n'.join(stderr_lines),
-                'error': error_message if error_detected else None,
+                'error': state.error_message if state.error_detected else None,
                 'returncode': process.returncode
             }
 
@@ -236,30 +236,58 @@ class ProcessDeployer(Process):
                 'error': str(e),
                 'returncode': -1
             }
-        
 
     def check_process_status(self) -> Dict:
         """Check if process is running correctly"""
         try:
-            result = subprocess.run(
+            # First try jlist for detailed status
+            jlist = subprocess.run(
+                "pm2 jlist",
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            if jlist.returncode == 0:
+                try:
+                    processes = json.loads(jlist.stdout)
+                    process = next((p for p in processes if p['name'] == self.name), None)
+                    
+                    if process:
+                        status = process.get('pm2_env', {}).get('status')
+                        if status == 'online':
+                            return {'success': True}
+                        else:
+                            return {
+                                'success': False,
+                                'error': f"Process is in {status} state"
+                            }
+                except json.JSONDecodeError:
+                    pass  # Fall through to pm2 show
+
+            # Fallback to pm2 show
+            show = subprocess.run(
                 f"pm2 show {self.name}",
                 shell=True,
                 capture_output=True,
-                text=True
+                text=True,
+                timeout=30
             )
             
-            if result.returncode != 0:
+            if show.returncode != 0:
                 return {
                     'success': False,
-                    'error': f"Failed to get process status: {result.stderr}"
+                    'error': f"Failed to get process status: {show.stderr}"
                 }
 
-            # Check process status
-            output = result.stdout.lower()
-            if "errored" in output or "error" in output:
+            output = show.stdout.lower()
+            if "online" in output:
+                return {'success': True}
+            elif any(x in output for x in ["errored", "error", "stopped", "exit"]):
                 return {
                     'success': False,
-                    'error': f"Process is in error state: {result.stdout}"
+                    'error': f"Process is not running: {show.stdout}"
                 }
 
             return {'success': True}
@@ -271,34 +299,72 @@ class ProcessDeployer(Process):
             }
 
     def get_error_details(self) -> str:
-        """Get error details from logs"""
+        """Get comprehensive error details"""
+        details = []
         try:
-            result = subprocess.run(
+            # Get PM2 logs
+            logs = subprocess.run(
                 f"pm2 logs {self.name} --lines 20 --nostream",
                 shell=True,
                 capture_output=True,
-                text=True
+                text=True,
+                timeout=30
             )
-            return result.stdout if result.returncode == 0 else "Could not retrieve logs"
+            if logs.returncode == 0:
+                details.append("=== Recent Logs ===")
+                details.append(logs.stdout)
+
+            # Get process info
+            info = subprocess.run(
+                f"pm2 show {self.name}",
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            if info.returncode == 0:
+                details.append("\n=== Process Info ===")
+                details.append(info.stdout)
+
+            return "\n".join(details) if details else "Could not retrieve error details"
         except Exception as e:
-            return f"Error getting logs: {str(e)}"
+            return f"Error getting details: {str(e)}"
 
     def cleanup(self):
         """Clean up resources on failure"""
         try:
-            # Try to stop and delete the PM2 process
-            subprocess.run(f"pm2 stop {self.name}", shell=True, check=False)
-            subprocess.run(f"pm2 delete {self.name}", shell=True, check=False)
+            # First try graceful stop
+            subprocess.run(
+                f"pm2 stop {self.name}",
+                shell=True,
+                check=False,
+                timeout=30
+            )
+            time.sleep(2)  # Give process time to stop
+            
+            # Then force delete
+            subprocess.run(
+                f"pm2 delete {self.name}",
+                shell=True,
+                check=False,
+                timeout=30
+            )
 
-            # Clean up files
-            for path in [
+            # Clean up files with error handling
+            paths = [
                 Path(f"/home/pm2/pm2-configs/{self.name}.config.js"),
                 Path(f"/home/pm2/pm2-processes/{self.name}")
-            ]:
-                if path.exists():
-                    if path.is_file():
-                        path.unlink()
-                    else:
-                        shutil.rmtree(path)
+            ]
+            
+            for path in paths:
+                try:
+                    if path.exists():
+                        if path.is_file():
+                            path.unlink()
+                        else:
+                            shutil.rmtree(path)
+                except Exception as e:
+                    self.logger.error(f"Failed to remove {path}: {str(e)}")
+                    
         except Exception as e:
             self.logger.error(f"Cleanup failed: {str(e)}")
