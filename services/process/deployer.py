@@ -89,6 +89,13 @@ class ProcessDeployer(Process):
                 if not pip_result['success']:
                     raise PM2CommandError(f"Dependencies installation failed: {pip_result['stderr']}")
 
+            # Save the PM2 process list
+            save_cmd = "pm2 save"
+            save_result = self.run_command(save_cmd, "PM2 Save")
+            if not save_result["success"]:
+                self.logger.warning(f"PM2 save failed: {save_result['stderr']}")
+
+            # Start the process with PM2
             start_cmd = f"pm2 start {config_path}"
             start_result = self.run_command(start_cmd, "Start")
             if not start_result['success']:
