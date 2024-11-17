@@ -1,4 +1,7 @@
 # core/config.py
+import os
+from pathlib import Path
+
 class Config:
     """Application configuration management"""
     
@@ -15,7 +18,7 @@ class Config:
         self.LOG_MAX_BYTES = int(os.environ.get('LOG_MAX_BYTES', 10485760))
         self.LOG_BACKUP_COUNT = int(os.environ.get('LOG_BACKUP_COUNT', 5))
         
-        # PM2 Configuration with debug flags
+        # PM2 Configuration
         self.PM2_BIN = os.environ.get('PM2_BIN', 'pm2')
         self.MAX_LOG_LINES = int(os.environ.get('MAX_LOG_LINES', 1000))
         self.COMMAND_TIMEOUT = int(os.environ.get('COMMAND_TIMEOUT', 30))
@@ -27,4 +30,14 @@ class Config:
         self.PYTHON_WRAPPER_DIR = Path('/home/pm2/pm2-configs')
         
         self._create_required_directories()
-
+    
+    def _create_required_directories(self):
+        """Create required directories if they don't exist"""
+        os.makedirs('logs', exist_ok=True)
+        self.PM2_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        self.PYTHON_WRAPPER_DIR.mkdir(parents=True, exist_ok=True)
+    
+    @classmethod
+    def from_env(cls) -> 'Config':
+        """Create configuration from environment variables"""
+        return cls()
