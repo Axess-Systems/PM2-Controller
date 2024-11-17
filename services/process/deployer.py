@@ -133,45 +133,41 @@ class ProcessDeployer(Process):
         """Run command with improved output capture"""
         try:
             self.logger.info(f"Running {label} command: {cmd}")
-            process = subprocess.Popen(
+            
+            # Run command and wait for completion
+            process = subprocess.run(
                 cmd,
                 shell=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                capture_output=True,
                 text=True,
-                bufsize=1,
-                env=dict(os.environ, PM2_SILENT='true')
+                env=dict(os.environ, GIT_TERMINAL_PROMPT="0")
+            )
+            
+            stdout = process.stdout.strip()
+            stderr = process.stderr.strip()
+
+            if stdout:
+                for line in stdout.splitlines():
+                    self.logger.info(f"[{label}] {line.strip()}")
+
+            if stderr:
+                for line in stderr.splitlines():
+                    # Don't log git clone info messages as errors
+                    if "Cloning into" in line:
+                        self.logger.info(f"[{label}] {line.strip()}")
+                    else:
+                        self.logger.error(f"[{label} Error] {line.strip()}")
+
+            success = process.returncode == 0 and not any(
+                line for line in stderr.splitlines()
+                if "Cloning into" not in line and line.strip()
             )
 
-            stdout_lines = []
-            stderr_lines = []
-
-            while True:
-                # Read stdout
-                stdout_line = process.stdout.readline()
-                if stdout_line:
-                    line = stdout_line.strip()
-                    if line:
-                        stdout_lines.append(line)
-                        self.logger.info(f"[{label}] {line}")
-
-                # Read stderr
-                stderr_line = process.stderr.readline()
-                if stderr_line:
-                    line = stderr_line.strip()
-                    if line:
-                        stderr_lines.append(line)
-                        self.logger.error(f"[{label} Error] {line}")
-
-                # Check if process has finished
-                if process.poll() is not None:
-                    break
-
             output = {
-                'success': process.returncode == 0 and not stderr_lines,
-                'stdout': '\n'.join(stdout_lines),
-                'stderr': '\n'.join(stderr_lines),
-                'error': '\n'.join(stderr_lines) if stderr_lines else None
+                'success': success,
+                'stdout': stdout,
+                'stderr': stderr,
+                'returncode': process.returncode
             }
 
             self.logger.debug(f"{label} command output: {output}")
@@ -183,9 +179,9 @@ class ProcessDeployer(Process):
                 'success': False,
                 'stdout': '',
                 'stderr': str(e),
-                'error': str(e)
+                'returncode': -1
             }
-
+            
     def cleanup(self):
         """Clean up resources on failure"""
         try:
