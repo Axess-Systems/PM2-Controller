@@ -280,7 +280,7 @@ class ProcessManager:
             raise
 
     def update_config(self, name: str, config_data: Dict) -> Dict:
-        """Update process configuration
+        """Update process configuration by regenerating the config file
         
         Args:
             name: Name of the process
@@ -297,22 +297,41 @@ class ProcessManager:
             self.logger.info(f"Updating configuration for process: {name}")
             self.logger.debug(f"New configuration: {json.dumps(config_data, indent=2)}")
 
-            # Check if process exists
+            # Check if process exists and get current process info
+            process = self.pm2_service.get_process(name)
+            
+            # Get current config file
             config_file = Path(f"/home/pm2/pm2-configs/{name}.config.js")
             if not config_file.exists():
                 raise ProcessNotFoundError(f"Config file not found for {name}")
 
-            # Read current config
-            current_config = self.get_process_config(name)
-
-            # Generate updated config file
+            # Create backup of current config
             backup_file = config_file.with_suffix('.backup')
             shutil.copy2(config_file, backup_file)
 
             try:
-                # Update the config file
-                with open(config_file, 'w') as f:
-                    f.write(self._update_config_content(current_config['content'], config_data))
+                # Extract repository info from current config
+                with open(config_file, 'r') as f:
+                    current_content = f.read()
+                    repo_match = re.search(r'repo:\s*[\'"](.+?)[\'"]', current_content)
+                    branch_match = re.search(r'ref:\s*[\'"](.+?)[\'"]', current_content)
+                    
+                    if not repo_match:
+                        raise PM2CommandError("Could not extract repository URL from current config")
+                    
+                    repo_url = repo_match.group(1)
+                    branch = branch_match.group(1) if branch_match else "main"
+
+                # Generate new config using PM2Config
+                new_config = self.pm2_service.generate_config(
+                    name=name,
+                    repo_url=repo_url,
+                    script=config_data.get('script', process.get('pm2_env', {}).get('pm_exec_path', 'app.py')),
+                    branch=branch,
+                    cron=config_data.get('cron'),
+                    auto_restart=config_data.get('auto_restart', True),
+                    env_vars=config_data.get('env_vars', {})
+                )
 
                 # Reload the process with new config
                 reload_result = subprocess.run(
@@ -323,93 +342,52 @@ class ProcessManager:
                     check=True
                 )
 
+                # Save PM2 process list
+                save_result = subprocess.run(
+                    "pm2 save",
+                    shell=True,
+                    capture_output=True,
+                    text=True
+                )
+
+                if save_result.returncode != 0:
+                    self.logger.warning(f"PM2 save warning: {save_result.stderr}")
+
                 return {
                     "success": True,
                     "message": f"Configuration updated for process {name}",
-                    "config_file": str(config_file),
-                    "reload_output": reload_result.stdout
+                    "config_file": str(new_config),
+                    "reload_output": reload_result.stdout,
+                    "save_output": save_result.stdout
                 }
 
             except Exception as e:
                 # Restore backup on failure
                 if backup_file.exists():
                     shutil.copy2(backup_file, config_file)
-                raise e
+                    
+                    # Try to reload with old config
+                    try:
+                        subprocess.run(
+                            f"pm2 reload {name}",
+                            shell=True,
+                            capture_output=True,
+                            text=True,
+                            check=True
+                        )
+                    except Exception as reload_error:
+                        self.logger.error(f"Failed to reload process with restored config: {str(reload_error)}")
+                    
+                raise PM2CommandError(f"Failed to update config: {str(e)}")
 
             finally:
                 # Clean up backup
                 if backup_file.exists():
                     backup_file.unlink()
 
-        except subprocess.CalledProcessError as e:
-            self.logger.error(f"Failed to reload process: {e.stderr}")
-            raise PM2CommandError(f"Failed to reload process: {e.stderr}")
+        except ProcessNotFoundError:
+            raise
         except Exception as e:
-            self.logger.error(f"Failed to update config for {name}: {str(e)}")
+            self.logger.error(f"Failed to update config for {name}: {str(e)}", exc_info=True)
             raise PM2CommandError(f"Config update failed: {str(e)}")
-
-    def _update_config_content(self, current_content: str, new_config: Dict) -> str:
-        """Update config file content with new values
-        
-        Args:
-            current_content: Current config file content
-            new_config: New configuration values
-            
-        Returns:
-            Updated config file content
-        """
-        content = current_content
-
-        # Update basic fields
-        if 'script' in new_config:
-            content = re.sub(
-                r'script:\s*[\'"].*?[\'"]',
-                f'script: "{new_config["script"]}"',
-                content
-            )
-
-        if 'cron' in new_config:
-            if new_config['cron']:
-                if 'cron_restart' not in content:
-                    content = content.replace(
-                        'watch: false,',
-                        f'watch: false,\n        cron_restart: "{new_config["cron"]},"'
-                    )
-                else:
-                    content = re.sub(
-                        r'cron_restart:\s*[\'"].*?[\'"]',
-                        f'cron_restart: "{new_config["cron"]}"',
-                        content
-                    )
-            else:
-                content = re.sub(r',?\s*cron_restart:\s*[\'"].*?[\'"]', '', content)
-
-        if 'auto_restart' in new_config:
-            content = re.sub(
-                r'autorestart:\s*\w+',
-                f'autorestart: {str(new_config["auto_restart"]).lower()}',
-                content
-            )
-
-        # Update environment variables
-        if 'env_vars' in new_config and new_config['env_vars']:
-            env_vars = new_config['env_vars']
-            env_block = '    env: {\n'
-            for key, value in env_vars.items():
-                env_block += f'        {key}: "{value}",\n'
-            env_block += '    },'
-
-            if 'env:' in content:
-                content = re.sub(
-                    r'env:\s*{[^}]*}',
-                    env_block.strip(),
-                    content,
-                    flags=re.DOTALL
-                )
-            else:
-                content = content.replace(
-                    'watch: false,',
-                    f'watch: false,\n{env_block}'
-                )
-
-        return content
+    
