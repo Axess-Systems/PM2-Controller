@@ -7,16 +7,9 @@ class PM2Config:
     def __init__(self, logger: logging.Logger):
         self.logger = logger
 
-    def generate_config(
-        self,
-        name: str,
-        repo_url: str,
-        script: str = 'app.py',
-        cron: Optional[str] = None,
-        auto_restart: bool = True,
-        env_vars: Optional[Dict[str, str]] = None
-    ) -> Path:
-        """Generate PM2 config file"""
+    def generate_config(self, name: str, repo_url: str, script: str = 'main.py', 
+                    cron: str = None, auto_restart: bool = True, env_vars: Dict[str, str] = None) -> Path:
+        """Create PM2 config file"""
         config_path = Path(f"/home/pm2/pm2-configs/{name}.config.js")
         
         # Use provided env vars or defaults
@@ -56,14 +49,14 @@ class PM2Config:
     module.exports = {{
         apps: [{{
             name: processName,
-            script: processScript,
-            args: `app:application --bind ${{envConfig.HOST}}:${{envConfig.PORT}} --chdir ${{processFolder}} --worker-class=gthread --workers=1 --threads=4 --timeout=120`,
+            script: `${{venvPath}}/bin/python`,
+            args: `${{processScript}}`,
             cwd: processFolder,
             env: envConfig,
             autorestart: autoRestart,
             {f'cron_restart: "{cron}",' if cron and cron.strip() else ''}
             max_restarts: 3,
-            watch: true,
+            watch: false,
             ignore_watch: [
                 "venv",
                 "*.pyc",
@@ -104,5 +97,5 @@ class PM2Config:
         self.logger.debug(f"Creating PM2 config at {config_path}")
         with open(config_path, 'w') as f:
             f.write(config_content)
-
+        
         return config_path

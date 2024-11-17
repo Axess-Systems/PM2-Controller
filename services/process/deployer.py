@@ -26,56 +26,56 @@ class ProcessDeployer(Process):
        """Execute deployment process"""
        try:
            # Create directories
-           base_path = Path("/home/pm2")
-           config_dir = base_path / "pm2-configs"
-           process_dir = base_path / "pm2-processes" / self.name
-           logs_dir = process_dir / "logs"
+            base_path = Path("/home/pm2")
+            config_dir = base_path / "pm2-configs"
+            process_dir = base_path / "pm2-processes" / self.name
+            logs_dir = process_dir / "logs"
 
-           config_dir.mkdir(parents=True, exist_ok=True)
-           process_dir.mkdir(parents=True, exist_ok=True)
-           logs_dir.mkdir(parents=True, exist_ok=True)
+            config_dir.mkdir(parents=True, exist_ok=True)
+            process_dir.mkdir(parents=True, exist_ok=True)
+            logs_dir.mkdir(parents=True, exist_ok=True)
 
-           # Create config file 
-           config_path = self.pm2_service.generate_config(
-               name=self.name,
-               repo_url=self.config_data['repository']['url'],
-               script=self.config_data.get('script', 'main.py'),
-               cron=self.config_data.get('cron'),
-               auto_restart=self.config_data.get('auto_restart', True),
-               env_vars=self.config_data.get('env_vars')
-           )
+            # Create config file 
+            config_path = self.pm2_service.config_generator.generate_config(
+                name=self.name,
+                repo_url=self.config_data['repository']['url'],
+                script=self.config_data.get('script', 'main.py'),
+                cron=self.config_data.get('cron'),
+                auto_restart=self.config_data.get('auto_restart', True),
+                env_vars=self.config_data.get('env_vars')
+            )
 
            # Run setup and deploy
-           setup_result = self.run_command(
+            setup_result = self.run_command(
                f"pm2 deploy {config_path} production setup --force",
                "Setup"
-           )
+            )
            
-           if not setup_result.get('success'):
+            if not setup_result.get('success'):
                raise PM2CommandError(f"Setup failed: {setup_result.get('error')}")
 
-           deploy_result = self.run_command(
+            deploy_result = self.run_command(
                f"pm2 deploy {config_path} production --force",
                "Deploy"
            )
            
-           if not deploy_result.get('success'):
+            if not deploy_result.get('success'):
                raise PM2CommandError(f"Deploy failed: {deploy_result.get('error')}")
 
            # Start the process with PM2
-           start_result = self.run_command(
+            start_result = self.run_command(
                f"pm2 start {config_path}",
                "Start"
            )
 
-           if not start_result.get('success'):
+            if not start_result.get('success'):
                raise PM2CommandError(f"Start failed: {start_result.get('error')}")
 
-           self.result_queue.put({
+            self.result_queue.put({
                "success": True,
                "message": f"Process {self.name} created, deployed and started successfully",
                "config_file": str(config_path)
-           })
+            })
 
        except Exception as e:
            self.logger.error(f"Deployment failed: {str(e)}")
