@@ -102,7 +102,7 @@ class ProcessDeployer(Process):
                     raise PM2CommandError(f"Dependencies installation failed: {pip_result['stderr']}")
 
             # Start the process with PM2
-            start_cmd = f"{self.config.PM2_BIN} start {config_path} --no-daemon"
+            start_cmd = f"pm2 start {config_path}"
             start_result = self.run_command(start_cmd, "Start")
             
             if not start_result['success']:
