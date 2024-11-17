@@ -1,42 +1,46 @@
-# /api/routes/health.py
+# api/routes/health.py
+from flask_restx import Resource, fields
+from services.pm2.service import PM2Service
+import logging
+from typing import Dict
 
-from datetime import datetime
-from flask_restx import Resource
-
-def create_health_routes(namespace, services=None):
-    """Create health check routes"""
+def create_health_routes(api, services: Dict):
+    """Create health check routes with improved error handling"""
     
-    @namespace.route('/')
+    # Get services
+    pm2_service: PM2Service = services['pm2_service']
+    logger: logging.Logger = services['logger']
+    
+    # Create health check response model
+    health_model = api.model('HealthCheck', {
+        'status': fields.String(description='API status', example='ok'),
+        'version': fields.String(description='API version', example='1.0'),
+        'pm2_status': fields.String(description='PM2 daemon status', example='online'),
+        'processes': fields.Integer(description='Number of running processes', example=3)
+    })
+    
+    @api.route('')
     class HealthCheck(Resource):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            self.pm2_service = services['pm2_service']
-            self.logger = services['logger']
-
-        @namespace.doc(
-            responses={
-                200: 'Service is healthy',
-                500: 'Service is unhealthy'
-            }
-        )
+        @api.doc('health_check')
+        @api.marshal_with(health_model)
+        @api.response(200, 'Success')
+        @api.response(500, 'Internal Server Error')
         def get(self):
-            """Check service health status"""
+            """Get system health status"""
             try:
                 # Check PM2 daemon status
-                self.pm2_service.execute_command('ping', retry=False)
+                processes = pm2_service.list_processes()
+                
+                running_count = sum(1 for p in processes 
+                                  if p.get('pm2_env', {}).get('status') == 'online')
                 
                 return {
-                    "status": "healthy",
-                    "timestamp": datetime.now().isoformat(),
-                    "version": "1.0"
+                    'status': 'ok',
+                    'version': '1.0',
+                    'pm2_status': 'online',
+                    'processes': running_count
                 }
+                
             except Exception as e:
-                self.logger.error(f"Health check failed: {str(e)}")
-                return {
-                    'error': 'Service is unhealthy',
-                    'error_type': type(e).__name__,
-                    'timestamp': datetime.now().isoformat(),
-                    'details': str(e)
-                }, 500
-
-    return None
+                logger.error(f"Health check failed: {str(e)}", exc_info=True)
+                api.abort(500, f"Health check failed: {str(e)}")
