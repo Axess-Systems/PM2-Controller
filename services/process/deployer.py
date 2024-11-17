@@ -4,6 +4,7 @@ import time
 import shutil
 import logging
 import subprocess
+import traceback
 from pathlib import Path
 from typing import Dict
 from multiprocessing import Process, Queue
@@ -14,18 +15,19 @@ from services.pm2.service import PM2Service
 
 class ProcessDeployer(Process):
     def __init__(self, config: Config, name: str, config_data: Dict, result_queue: Queue, logger: logging.Logger):
-       super().__init__()
-       self.config = config
-       self.name = name
-       self.config_data = config_data
-       self.result_queue = result_queue
-       self.logger = logger
-       self.pm2_service = PM2Service(config, logger)
+        super().__init__()
+        self.config = config
+        self.name = name
+        self.config_data = config_data
+        self.result_queue = result_queue
+        self.logger = logger
+        self.pm2_service = PM2Service(config, logger)
 
     def run(self):
         """Execute deployment process"""
         try:
             self.logger.info(f"Starting deployment for process: {self.name}")
+            self.logger.debug(f"Config data: {self.config_data}")
             
             # Create directories
             base_path = Path("/home/pm2")
@@ -38,6 +40,10 @@ class ProcessDeployer(Process):
                 directory.mkdir(parents=True, exist_ok=True)
                 self.logger.debug(f"Created directory: {directory}")
 
+            # Print current directory state
+            self.logger.debug(f"Base directory contents: {list(base_path.glob('*'))}")
+            self.logger.debug(f"Config directory contents: {list(config_dir.glob('*'))}")
+
             # Create config file 
             config_path = self.pm2_service.generate_config(
                 name=self.name,
@@ -49,77 +55,67 @@ class ProcessDeployer(Process):
                 env_vars=self.config_data.get('env_vars')
             )
             
-            self.logger.info(f"Created config file at: {config_path}")
+            # Log config file contents
+            self.logger.debug(f"Config file created at: {config_path}")
+            with open(config_path, 'r') as f:
+                self.logger.debug(f"Config file contents:\n{f.read()}")
 
             # Clean up existing deployment if any
             clean_cmd = f"rm -rf {process_dir}/current {process_dir}/source"
-            clean_result = subprocess.run(clean_cmd, shell=True, capture_output=True, text=True)
-            if clean_result.returncode != 0:
-                self.logger.warning(f"Cleanup warning: {clean_result.stderr}")
+            clean_result = self.run_command(clean_cmd, "Cleanup")
+            if not clean_result['success']:
+                self.logger.warning(f"Cleanup warning: {clean_result['stderr']}")
 
-            # Setup the deployment
-            setup_cmd = f"{self.config.PM2_BIN} deploy {config_path} production setup 2>&1"
-            setup_process = subprocess.run(
-                setup_cmd,
-                shell=True,
-                capture_output=True,
-                text=True
-            )
-            
-            setup_output = setup_process.stdout + setup_process.stderr
-            self.logger.info(f"Setup output: {setup_output}")
-            
-            if setup_process.returncode != 0:
-                raise PM2CommandError(f"Setup failed: {setup_output}")
-
-            # Clone the repository
+            # Clone the repository first
             repo_url = self.config_data['repository']['url']
             branch = self.config_data['repository'].get('branch', 'main')
             
             clone_cmd = f"git clone -b {branch} {repo_url} {process_dir}/source"
-            clone_result = subprocess.run(clone_cmd, shell=True, capture_output=True, text=True)
+            clone_result = self.run_command(clone_cmd, "Git Clone")
             
-            if clone_result.returncode != 0:
-                raise PM2CommandError(f"Git clone failed: {clone_result.stderr}")
+            if not clone_result['success']:
+                raise PM2CommandError(f"Git clone failed: {clone_result['stderr']}")
 
-            # Deploy the application
-            deploy_cmd = f"{self.config.PM2_BIN} deploy {config_path} production 2>&1"
-            deploy_process = subprocess.run(
-                deploy_cmd,
-                shell=True,
-                capture_output=True,
-                text=True
-            )
+            # Create the current directory and copy files
+            current_dir = process_dir / "current"
+            current_dir.mkdir(exist_ok=True)
             
-            deploy_output = deploy_process.stdout + deploy_process.stderr
-            self.logger.info(f"Deploy output: {deploy_output}")
+            copy_cmd = f"cp -r {process_dir}/source/* {current_dir}/"
+            copy_result = self.run_command(copy_cmd, "Copy Files")
             
-            if deploy_process.returncode != 0:
-                raise PM2CommandError(f"Deploy failed: {deploy_output}")
+            if not copy_result['success']:
+                raise PM2CommandError(f"File copy failed: {copy_result['stderr']}")
 
-            # Start the process
-            start_cmd = f"{self.config.PM2_BIN} start {config_path} 2>&1"
-            start_process = subprocess.run(
-                start_cmd,
-                shell=True,
-                capture_output=True,
-                text=True
-            )
+            # Setup Python virtual environment
+            venv_cmd = f"python3 -m venv {process_dir}/venv"
+            venv_result = self.run_command(venv_cmd, "Create venv")
             
-            start_output = start_process.stdout + start_process.stderr
-            self.logger.info(f"Start output: {start_output}")
+            if not venv_result['success']:
+                raise PM2CommandError(f"Virtual environment creation failed: {venv_result['stderr']}")
+
+            # Install dependencies if requirements.txt exists
+            if (current_dir / "requirements.txt").exists():
+                pip_cmd = f"{process_dir}/venv/bin/pip install -r {current_dir}/requirements.txt"
+                pip_result = self.run_command(pip_cmd, "Install Dependencies")
+                
+                if not pip_result['success']:
+                    raise PM2CommandError(f"Dependencies installation failed: {pip_result['stderr']}")
+
+            # Start the process with PM2
+            start_cmd = f"{self.config.PM2_BIN} start {config_path} --no-daemon"
+            start_result = self.run_command(start_cmd, "Start")
             
-            if start_process.returncode != 0:
-                raise PM2CommandError(f"Start failed: {start_output}")
+            if not start_result['success']:
+                raise PM2CommandError(f"Process start failed: {start_result['stderr']}")
 
             self.result_queue.put({
                 "success": True,
                 "message": f"Process {self.name} deployed successfully",
                 "config_file": str(config_path),
                 "details": {
-                    "setup_output": setup_output,
-                    "deploy_output": deploy_output,
-                    "start_output": start_output
+                    "clone_output": clone_result['stdout'],
+                    "deploy_output": copy_result['stdout'],
+                    "start_output": start_result['stdout']
                 }
             })
 
@@ -129,9 +125,10 @@ class ProcessDeployer(Process):
             self.result_queue.put({
                 "success": False,
                 "message": f"Failed to deploy process {self.name}",
-                "error": str(e)
-            })       
-            
+                "error": str(e),
+                "traceback": traceback.format_exc()
+            })
+
     def run_command(self, cmd: str, label: str) -> Dict:
         """Run command with improved output capture"""
         try:
@@ -188,35 +185,27 @@ class ProcessDeployer(Process):
                 'stderr': str(e),
                 'error': str(e)
             }
-            
+
     def cleanup(self):
         """Clean up resources on failure"""
         try:
-            name = self.name
-            self.logger.info(f"Starting cleanup for failed deployment of {name}")
+            self.logger.info(f"Starting cleanup for failed deployment of {self.name}")
             
             # Clean up PM2 process if it exists
-            subprocess.run(
-                f"{self.config.PM2_BIN} delete {name}",
-                shell=True,
-                capture_output=True,
-                text=True
-            )
+            pm2_delete = self.run_command(f"{self.config.PM2_BIN} delete {self.name}", "PM2 Delete")
+            self.logger.debug(f"PM2 delete result: {pm2_delete}")
 
-            # Clean up files
-            config_file = Path(f"/home/pm2/pm2-configs/{name}.config.js")
-            process_dir = Path(f"/home/pm2/pm2-processes/{name}")
+            # Clean up files with logging
+            config_file = Path(f"/home/pm2/pm2-configs/{self.name}.config.js")
+            process_dir = Path(f"/home/pm2/pm2-processes/{self.name}")
 
             if config_file.exists():
                 config_file.unlink()
-                self.logger.info(f"Removed config file: {config_file}")
+                self.logger.debug(f"Removed config file: {config_file}")
 
             if process_dir.exists():
-                import shutil
                 shutil.rmtree(process_dir)
-                self.logger.info(f"Removed process directory: {process_dir}")
+                self.logger.debug(f"Removed process directory: {process_dir}")
 
         except Exception as e:
             self.logger.error(f"Cleanup failed: {str(e)}", exc_info=True)
-   
-   
