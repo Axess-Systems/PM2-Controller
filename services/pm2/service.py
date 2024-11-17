@@ -13,9 +13,15 @@ class PM2Service:
     """Service for interacting with PM2 process manager with improved error handling"""
     
     def __init__(self, config: Config, logger: logging.Logger):
+        """Initialize PM2Service
+        
+        Args:
+            config: Application configuration instance
+            logger: Logger instance for logging PM2 operations
+        """
         self.config = config
         self.logger = logger
-        self.config_generator = PM2Config(logger)
+        self.config_generator = PM2Config(logger=logger)
         self._verify_pm2_installation()
     
     def _verify_pm2_installation(self):
@@ -35,6 +41,25 @@ class PM2Service:
         except Exception as e:
             self.logger.error(f"PM2 verification failed: {str(e)}")
             raise PM2Error(f"PM2 verification failed: {str(e)}")
+
+    def generate_config(self, name: str, repo_url: str, script: str = 'main.py', 
+                       branch: str = "main", cron: str = None, 
+                       auto_restart: bool = True, 
+                       env_vars: Dict[str, str] = None) -> Path:
+        """Generate PM2 configuration file using the config generator"""
+        try:
+            return self.config_generator.generate_config(
+                name=name,
+                repo_url=repo_url,
+                script=script,
+                branch=branch,
+                cron=cron,
+                auto_restart=auto_restart,
+                env_vars=env_vars
+            )
+        except Exception as e:
+            self.logger.error(f"Failed to generate config for {name}: {str(e)}")
+            raise PM2Error(f"Config generation failed: {str(e)}")
     
     def list_processes(self) -> List[Dict]:
         """Get list of all PM2 processes with improved error handling"""
@@ -84,26 +109,6 @@ class PM2Service:
         except Exception as e:
             self.logger.error(f"Error getting process {name}: {str(e)}")
             raise PM2Error(f"Failed to get process details: {str(e)}")
-
-    def generate_config(self, name: str, repo_url: str, script: str = 'main.py', 
-                       branch: str = "main",  # Added branch parameter
-                       cron: str = None, 
-                       auto_restart: bool = True, 
-                       env_vars: Dict[str, str] = None) -> Path:
-        """Generate PM2 configuration file using the config generator"""
-        try:
-            return self.config_generator.generate_config(
-                name=name,
-                repo_url=repo_url,
-                script=script,
-                branch=branch,  # Pass branch to config generator
-                cron=cron,
-                auto_restart=auto_restart,
-                env_vars=env_vars
-            )
-        except Exception as e:
-            self.logger.error(f"Failed to generate config for {name}: {str(e)}")
-            raise PM2Error(f"Config generation failed: {str(e)}")
 
     def run_command(self, cmd: str, timeout: Optional[int] = None) -> Dict:
         """Run a PM2 command with proper error handling"""

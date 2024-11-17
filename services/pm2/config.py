@@ -4,6 +4,14 @@ from pathlib import Path
 from typing import Dict, Optional
 
 class PM2Config:
+    def __init__(self, logger: logging.Logger):
+        """Initialize PM2Config
+        
+        Args:
+            logger: Logger instance for logging configuration operations
+        """
+        self.logger = logger
+        
     def generate_config(self, name: str, repo_url: str, script: str = 'main.py', 
                        branch: str = "main", cron: str = None, 
                        auto_restart: bool = True, 
