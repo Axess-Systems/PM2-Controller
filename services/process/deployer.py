@@ -129,59 +129,51 @@ class ProcessDeployer(Process):
                 "traceback": traceback.format_exc()
             })
 
-    def run_command(self, cmd: str, label: str) -> Dict:
-        """Run command with improved output capture"""
+
+
+    def run_command(self, cmd: str, action: str, timeout: int = 600) -> Dict:
+        """
+        Run a shell command asynchronously and capture output without blocking the API.
+
+        Args:
+            cmd: The shell command to execute.
+            action: Description of the action being performed.
+            timeout: Maximum time to wait for the command (if needed).
+
+        Returns:
+            A dictionary with the command's execution results.
+        """
         try:
-            self.logger.info(f"Running {label} command: {cmd}")
+            self.logger.info(f"Running {action} command: {cmd}")
             
-            # Run command and wait for completion
-            process = subprocess.run(
+            # Start the process asynchronously
+            process = subprocess.Popen(
                 cmd,
                 shell=True,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                env=dict(os.environ, GIT_TERMINAL_PROMPT="0")
-            )
-            
-            stdout = process.stdout.strip()
-            stderr = process.stderr.strip()
-
-            if stdout:
-                for line in stdout.splitlines():
-                    self.logger.info(f"[{label}] {line.strip()}")
-
-            if stderr:
-                for line in stderr.splitlines():
-                    # Don't log git clone info messages as errors
-                    if "Cloning into" in line:
-                        self.logger.info(f"[{label}] {line.strip()}")
-                    else:
-                        self.logger.error(f"[{label} Error] {line.strip()}")
-
-            success = process.returncode == 0 and not any(
-                line for line in stderr.splitlines()
-                if "Cloning into" not in line and line.strip()
             )
 
-            output = {
-                'success': success,
-                'stdout': stdout,
-                'stderr': stderr,
-                'returncode': process.returncode
+            # Optionally, wait for the command to complete (useful for specific cases)
+            stdout, stderr = process.communicate(timeout=timeout)
+            self.logger.debug(f"{action} command output: {stdout.strip()}")
+
+            return {
+                "success": process.returncode == 0,
+                "stdout": stdout.strip(),
+                "stderr": stderr.strip(),
             }
 
-            self.logger.debug(f"{label} command output: {output}")
-            return output
+        except subprocess.TimeoutExpired:
+            self.logger.error(f"{action} command timed out after {timeout} seconds")
+            return {"success": False, "stdout": "", "stderr": "Command timed out"}
 
         except Exception as e:
-            self.logger.error(f"{label} command failed: {str(e)}", exc_info=True)
-            return {
-                'success': False,
-                'stdout': '',
-                'stderr': str(e),
-                'returncode': -1
-            }
-            
+            self.logger.error(f"Error running {action} command: {e}")
+            return {"success": False, "stdout": "", "stderr": str(e)}
+    
+           
     def cleanup(self):
         """Clean up resources on failure"""
         try:
