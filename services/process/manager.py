@@ -280,7 +280,7 @@ class ProcessManager:
             raise
 
     def update_config(self, name: str, config_data: Dict) -> Dict:
-        """Update process configuration by regenerating the config file
+        """Update process configuration by modifying specific configurations
         
         Args:
             name: Name of the process
@@ -310,28 +310,56 @@ class ProcessManager:
             shutil.copy2(config_file, backup_file)
 
             try:
-                # Extract repository info from current config
                 with open(config_file, 'r') as f:
-                    current_content = f.read()
-                    repo_match = re.search(r'repo:\s*[\'"](.+?)[\'"]', current_content)
-                    branch_match = re.search(r'ref:\s*[\'"](.+?)[\'"]', current_content)
-                    
-                    if not repo_match:
-                        raise PM2CommandError("Could not extract repository URL from current config")
-                    
-                    repo_url = repo_match.group(1)
-                    branch = branch_match.group(1) if branch_match else "main"
+                    config_content = f.read()
 
-                # Generate new config using PM2Config
-                new_config = self.pm2_service.generate_config(
-                    name=name,
-                    repo_url=repo_url,
-                    script=config_data.get('script', process.get('pm2_env', {}).get('pm_exec_path', 'app.py')),
-                    branch=branch,
-                    cron=config_data.get('cron'),
-                    auto_restart=config_data.get('auto_restart', True),
-                    env_vars=config_data.get('env_vars', {})
-                )
+                # Update config content using regex patterns
+                updated_content = config_content
+
+                # Update script if provided
+                if 'script' in config_data:
+                    script_pattern = r'(script:\s*[`\'"])(.*?)([`\'"])'
+                    if re.search(script_pattern, updated_content):
+                        updated_content = re.sub(script_pattern, 
+                                            rf'\1{config_data["script"]}\3', 
+                                            updated_content)
+
+                # Update cron if provided
+                if 'cron' in config_data:
+                    cron_pattern = r'(cron_restart:\s*[\'"])(.*?)([\'"])'
+                    if re.search(cron_pattern, updated_content):
+                        updated_content = re.sub(cron_pattern, 
+                                            rf'\1{config_data["cron"]}\3', 
+                                            updated_content)
+                    elif config_data['cron']:  # Add cron if it doesn't exist
+                        updated_content = updated_content.replace(
+                            'watch: false,',
+                            f'watch: false,\n        cron_restart: "{config_data["cron"]}",')
+
+                # Update auto_restart if provided
+                if 'auto_restart' in config_data:
+                    auto_restart_pattern = r'(autorestart:\s*)(true|false)'
+                    updated_content = re.sub(auto_restart_pattern, 
+                                        rf'\1{str(config_data["auto_restart"]).lower()}', 
+                                        updated_content)
+
+                # Update environment variables if provided
+                if 'env_vars' in config_data and config_data['env_vars']:
+                    env_vars = config_data['env_vars']
+                    env_vars_str = ',\n    '.join(f'{key}: "{value}"' 
+                                                for key, value in env_vars.items())
+                    
+                    # Find the envConfig section
+                    env_pattern = r'(const\s+envConfig\s*=\s*{)(.*?)(};)'
+                    if re.search(env_pattern, updated_content, re.DOTALL):
+                        updated_content = re.sub(env_pattern, 
+                                            rf'\1\n    {env_vars_str}\n\3', 
+                                            updated_content,
+                                            flags=re.DOTALL)
+
+                # Write updated config
+                with open(config_file, 'w') as f:
+                    f.write(updated_content)
 
                 # Reload the process with new config
                 reload_result = subprocess.run(
@@ -356,7 +384,7 @@ class ProcessManager:
                 return {
                     "success": True,
                     "message": f"Configuration updated for process {name}",
-                    "config_file": str(new_config),
+                    "config_file": str(config_file),
                     "reload_output": reload_result.stdout,
                     "save_output": save_result.stdout
                 }
@@ -390,4 +418,7 @@ class ProcessManager:
         except Exception as e:
             self.logger.error(f"Failed to update config for {name}: {str(e)}", exc_info=True)
             raise PM2CommandError(f"Config update failed: {str(e)}")
+    
+      
+   
     
