@@ -17,6 +17,12 @@ from .deployer import ProcessDeployer
 
 class ProcessManager:
     def __init__(self, config: Config, logger: logging.Logger):
+        """Initialize ProcessManager
+        
+        Args:
+            config: Application configuration instance
+            logger: Logger instance for process management operations
+        """
         self.config = config
         self.logger = logger
 
@@ -28,16 +34,16 @@ class ProcessManager:
             timeout: Maximum time to wait for deployment in seconds
             
         Returns:
-            Dict containing deployment result
+            Dict with deployment result
             
         Raises:
-            ProcessAlreadyExistsError: If process with same name exists
+            ProcessAlreadyExistsError: If process already exists
             PM2CommandError: If deployment fails
         """
         try:
             name = config_data["name"]
             self.logger.info(f"Creating new process: {name}")
-            self.logger.debug(f"Process config: {config_data}")
+            self.logger.debug(f"Process configuration: {json.dumps(config_data, indent=2)}")
 
             config_path = Path(f"/home/pm2/pm2-configs/{name}.config.js")
             if config_path.exists():
@@ -57,13 +63,22 @@ class ProcessManager:
 
             try:
                 result = result_queue.get(timeout=timeout)
-                if not result.get("success"):
-                    error_msg = result.get("error", "Unknown deployment error")
+                if not result:
+                    raise PM2CommandError("Deployment failed: No result received")
+                    
+                if not result.get("success", False):
+                    error_msg = result.get("error") or result.get("message") or "Unknown deployment error"
                     self.logger.error(f"Deployment failed: {error_msg}")
                     raise PM2CommandError(error_msg)
                 
                 self.logger.info(f"Process {name} created successfully")
-                return result
+                return {
+                    "success": True,
+                    "message": f"Process {name} created successfully",
+                    "process_name": name,
+                    "config_file": result.get("config_file"),
+                    "details": result.get("details", {})
+                }
                 
             except Empty:
                 self.logger.error(f"Deployment timed out after {timeout} seconds")
@@ -72,12 +87,14 @@ class ProcessManager:
             finally:
                 deployer.join()
                 
+        except (ProcessAlreadyExistsError, PM2CommandError):
+            raise
         except Exception as e:
             self.logger.error(f"Process creation failed: {str(e)}", exc_info=True)
-            raise
+            raise PM2CommandError(f"Process creation failed: {str(e)}")
 
     def delete_process(self, name: str) -> Dict:
-        """Delete a process and its associated configuration files
+        """Delete a process and its associated files
         
         Args:
             name: Name of the process to delete
@@ -86,7 +103,7 @@ class ProcessManager:
             Dict with deletion status
             
         Raises:
-            PM2CommandError: If process deletion fails
+            PM2CommandError: If deletion fails
         """
         try:
             self.logger.info(f"Deleting process: {name}")
@@ -94,7 +111,7 @@ class ProcessManager:
             config_path = Path(f"/home/pm2/pm2-configs/{name}.config.js")
             process_dir = Path(f"/home/pm2/pm2-processes/{name}")
 
-            # Get process status from PM2
+            # Check PM2 process status
             try:
                 process_list = json.loads(
                     subprocess.run(
@@ -109,18 +126,19 @@ class ProcessManager:
                 process = next((p for p in process_list if p["name"] == name), None)
                 if process:
                     if process.get("pm2_env", {}).get("status") == "online":
-                        self.logger.error(f"Process {name} is running. Stop it first.")
-                        raise PM2CommandError(
-                            f"Process {name} is currently running. Stop it first using 'pm2 stop {name}'"
-                        )
+                        error_msg = f"Process {name} is currently running. Stop it first using 'pm2 stop {name}'"
+                        self.logger.error(error_msg)
+                        raise PM2CommandError(error_msg)
                         
                     self.logger.debug(f"Deleting PM2 process: {name}")
-                    subprocess.run(
+                    delete_result = subprocess.run(
                         f"{self.config.PM2_BIN} delete {name}",
                         shell=True,
-                        check=True,
                         capture_output=True,
+                        text=True
                     )
+                    if delete_result.returncode != 0:
+                        self.logger.warning(f"PM2 delete returned non-zero: {delete_result.stderr}")
                     
             except subprocess.CalledProcessError as e:
                 self.logger.warning(f"PM2 command failed: {e.stderr}")
@@ -137,7 +155,11 @@ class ProcessManager:
                 shutil.rmtree(process_dir)
 
             self.logger.info(f"Process {name} deleted successfully")
-            return {"message": f"Process {name} deleted successfully"}
+            return {
+                "success": True,
+                "message": f"Process {name} deleted successfully",
+                "process_name": name
+            }
 
         except Exception as e:
             self.logger.error(f"Failed to delete process {name}: {str(e)}", exc_info=True)
@@ -162,62 +184,24 @@ class ProcessManager:
             if not config_path.exists():
                 raise ProcessNotFoundError(f"Config file not found for process {name}")
             
-            # Read and parse config file
             with open(config_path, 'r') as f:
                 config_content = f.read()
                 
             self.logger.debug(f"Retrieved config for process {name}")
             return {
+                "success": True,
                 "config_file": str(config_path),
                 "content": config_content
             }
             
+        except ProcessNotFoundError:
+            raise
         except Exception as e:
             self.logger.error(f"Failed to get config for process {name}: {str(e)}", exc_info=True)
-            raise
-
-    def update_config(self, name: str, config_data: Dict) -> Dict:
-        """Update process configuration
-        
-        Args:
-            name: Name of the process
-            config_data: New configuration data
-            
-        Returns:
-            Dict with update status
-            
-        Raises:
-            ProcessNotFoundError: If process doesn't exist
-            PM2CommandError: If update fails
-        """
-        try:
-            self.logger.info(f"Updating config for process: {name}")
-            self.logger.debug(f"New config data: {config_data}")
-            
-            config_path = Path(f"/home/pm2/pm2-configs/{name}.config.js")
-            if not config_path.exists():
-                raise ProcessNotFoundError(f"Config file not found for process {name}")
-
-            # TODO: Implement config update logic
-            # This should:
-            # 1. Generate new config file
-            # 2. Validate the new configuration
-            # 3. Backup the old config
-            # 4. Apply the new config
-            # 5. Restart the process if necessary
-
-            self.logger.info(f"Config updated for process {name}")
-            return {
-                "message": f"Configuration updated for process {name}",
-                "config_file": str(config_path)
-            }
-            
-        except Exception as e:
-            self.logger.error(f"Failed to update config for process {name}: {str(e)}", exc_info=True)
-            raise
+            raise PM2CommandError(f"Failed to get process config: {str(e)}")
 
     def update_process(self, name: str) -> Dict:
-        """Update a process (pull latest code and restart)
+        """Update process code and restart
         
         Args:
             name: Name of the process
@@ -248,7 +232,7 @@ class ProcessManager:
             if git_pull.returncode != 0:
                 raise PM2CommandError(f"Git pull failed: {git_pull.stderr}")
 
-            # Install any new dependencies
+            # Install dependencies if requirements.txt exists
             requirements_file = process_dir / "requirements.txt"
             if requirements_file.exists():
                 venv_pip = Path(f"/home/pm2/pm2-processes/{name}/venv/bin/pip")
@@ -275,7 +259,9 @@ class ProcessManager:
 
             self.logger.info(f"Process {name} updated successfully")
             return {
+                "success": True,
                 "message": f"Process {name} updated successfully",
+                "process_name": name,
                 "git_output": git_pull.stdout,
                 "restart_output": restart_result.stdout
             }
