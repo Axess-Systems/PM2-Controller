@@ -36,10 +36,11 @@ class ProcessDeployer(Process):
             logs_dir.mkdir(parents=True, exist_ok=True)
 
             # Create config file 
-            config_path = self.pm2_service.config_generator.generate_config(
+            config_path = self.pm2_service.generate_config(
                 name=self.name,
                 repo_url=self.config_data['repository']['url'],
                 script=self.config_data.get('script', 'main.py'),
+                branch=self.config_data.get('branch', 'main'),  # Add branch from config data
                 cron=self.config_data.get('cron'),
                 auto_restart=self.config_data.get('auto_restart', True),
                 env_vars=self.config_data.get('env_vars')
