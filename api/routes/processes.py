@@ -245,39 +245,92 @@ def create_process_routes(namespace, services=None):
     class ProcessUpdate(Resource):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
+            self.pm2_service = services['pm2_service']
             self.process_manager = services['process_manager']
             self.logger = services['logger']
 
         @namespace.doc(
             responses={
-                200: 'Process updated successfully',
-                404: 'Process not found',
-                500: 'Update failed'
+                200: "Process updated successfully",
+                404: "Process not found",
+                500: "Update failed",
             }
         )
         def post(self, process_name):
-            """Update a process using PM2 deploy (updates source code from repository)"""
+            """Update a process using PM2 deploy command."""
             try:
-                result = self.process_manager.update_process(process_name)
-                return result
+                self.logger.info(f"Starting update for process: {process_name}")
+                
+                # First verify process exists
+                process = self.pm2_service.get_process(process_name)
+                
+                # Get config file path
+                config_file = Path(f"/home/pm2/pm2-configs/{process_name}.config.js")
+                if not config_file.exists():
+                    raise ProcessNotFoundError(f"Config file not found for {process_name}")
+                
+                # Run PM2 deploy command
+                deploy_result = self.pm2_service.run_command(
+                    f"pm2 deploy {config_file} production update --force",
+                    timeout=300  # Longer timeout for deployment
+                )
+                
+                if not deploy_result.get('success'):
+                    raise PM2CommandError(f"Deploy command failed: {deploy_result.get('error')}")
+                
+                # Start/restart the process with the config
+                start_result = self.pm2_service.run_command(
+                    f"pm2 start {config_file}",
+                    timeout=60
+                )
+                
+                if not start_result.get('success'):
+                    raise PM2CommandError(f"Process start failed: {start_result.get('error')}")
+                
+                # Save PM2 process list
+                save_result = self.pm2_service.run_command("pm2 save")
+                if not save_result.get('success'):
+                    self.logger.warning(f"PM2 save failed: {save_result.get('error')}")
+                
+                return {
+                    "success": True,
+                    "message": f"Process {process_name} updated successfully",
+                    "details": {
+                        "deploy_output": deploy_result.get('output'),
+                        "start_output": start_result.get('output')
+                    }
+                }, 200
                 
             except ProcessNotFoundError as e:
+                self.logger.error(f"Process not found: {str(e)}")
                 return {
-                    'error': str(e),
-                    'error_type': 'ProcessNotFoundError',
-                    'timestamp': datetime.now().isoformat(),
-                    'details': {'process_name': process_name}
+                    "error": str(e),
+                    "error_type": "ProcessNotFoundError",
+                    "timestamp": datetime.now().isoformat(),
+                    "details": {"process_name": process_name}
                 }, 404
                 
-            except Exception as e:
-                self.logger.error(f"Error updating process {process_name}: {str(e)}")
+            except PM2CommandError as e:
+                self.logger.error(f"Update command failed: {str(e)}")
                 return {
-                    'error': str(e),
-                    'error_type': type(e).__name__,
-                    'timestamp': datetime.now().isoformat(),
-                    'details': {'process_name': process_name}
+                    "error": str(e),
+                    "error_type": "PM2CommandError",
+                    "timestamp": datetime.now().isoformat(),
+                    "details": {
+                        "process_name": process_name,
+                        "command_output": str(e)
+                    }
                 }, 500
-
+                
+            except Exception as e:
+                self.logger.error(f"Unexpected error updating process {process_name}: {str(e)}")
+                return {
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                    "timestamp": datetime.now().isoformat(),
+                    "details": {"process_name": process_name}
+                }, 500
+            
     @namespace.route('/<string:process_name>/config')
     class ProcessConfigUpdate(Resource):
         def __init__(self, *args, **kwargs):

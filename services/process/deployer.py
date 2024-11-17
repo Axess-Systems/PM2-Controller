@@ -122,6 +122,7 @@ class ProcessDeployer(Process):
                 "traceback": traceback.format_exc()
             })
 
+    
     def run_command(self, cmd: str, action: str, cwd: str = None, timeout: int = 600) -> Dict:
         try:
             self.logger.info(f"Running {action} command: {cmd} from {cwd or 'current directory'}")

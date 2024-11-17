@@ -111,9 +111,11 @@ class PM2Service:
             raise PM2Error(f"Failed to get process details: {str(e)}")
 
     def run_command(self, cmd: str, timeout: Optional[int] = None) -> Dict:
-        """Run a PM2 command with proper error handling"""
+        """Run a PM2 command with proper error handling and timeout"""
         try:
             timeout = timeout or self.config.COMMAND_TIMEOUT
+            self.logger.debug(f"Running PM2 command: {cmd}")
+            
             result = subprocess.run(
                 cmd,
                 shell=True,
@@ -122,6 +124,12 @@ class PM2Service:
                 timeout=timeout
             )
             
+            # Log command output for debugging
+            if result.stdout:
+                self.logger.debug(f"Command stdout: {result.stdout.strip()}")
+            if result.stderr:
+                self.logger.debug(f"Command stderr: {result.stderr.strip()}")
+            
             if result.returncode != 0:
                 error_msg = result.stderr.strip() or "Unknown error"
                 self.logger.error(f"PM2 command failed: {error_msg}")
@@ -129,7 +137,8 @@ class PM2Service:
                 
             return {
                 'success': True,
-                'output': result.stdout.strip()
+                'output': result.stdout.strip(),
+                'command': cmd
             }
             
         except subprocess.TimeoutExpired:
@@ -140,3 +149,45 @@ class PM2Service:
         except Exception as e:
             self.logger.error(f"Command execution failed: {str(e)}")
             raise PM2Error(f"Command failed: {str(e)}")
+
+    def deploy_process(self, process_name: str, action: str = "update") -> Dict:
+        """Deploy or update a process using PM2 deploy command
+        
+        Args:
+            process_name: Name of the process to deploy/update
+            action: Deploy action (update, setup, revert)
+            
+        Returns:
+            Dict containing deployment results
+            
+        Raises:
+            ProcessNotFoundError: If process doesn't exist
+            PM2Error: If deployment fails
+        """
+        try:
+            config_file = Path(f"/home/pm2/pm2-configs/{process_name}.config.js")
+            if not config_file.exists():
+                raise ProcessNotFoundError(f"Config file not found for {process_name}")
+            
+            # Run deployment command
+            cmd = f"pm2 deploy {config_file} production {action} --force"
+            deploy_result = self.run_command(cmd, timeout=300)
+            
+            # Start/reload the process
+            start_result = self.run_command(f"pm2 start {config_file}", timeout=60)
+            
+            # Save PM2 process list
+            save_result = self.run_command("pm2 save", timeout=30)
+            
+            return {
+                'success': True,
+                'deploy_output': deploy_result.get('output'),
+                'start_output': start_result.get('output'),
+                'save_output': save_result.get('output')
+            }
+            
+        except ProcessNotFoundError:
+            raise
+        except Exception as e:
+            self.logger.error(f"Deployment failed: {str(e)}")
+            raise PM2Error(f"Deployment failed: {str(e)}")
