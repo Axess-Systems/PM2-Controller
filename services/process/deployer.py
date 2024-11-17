@@ -23,9 +23,9 @@ class ProcessDeployer(Process):
        self.pm2_service = PM2Service(config, logger)
 
    def run(self):
-       """Execute deployment process"""
-       try:
-           # Create directories
+        """Execute deployment process"""
+        try:
+            # Create directories
             base_path = Path("/home/pm2")
             config_dir = base_path / "pm2-configs"
             process_dir = base_path / "pm2-processes" / self.name
@@ -40,53 +40,61 @@ class ProcessDeployer(Process):
                 name=self.name,
                 repo_url=self.config_data['repository']['url'],
                 script=self.config_data.get('script', 'main.py'),
-                branch=self.config_data.get('branch', 'main'),  # Add branch from config data
+                branch=self.config_data['repository'].get('branch', 'main'),
                 cron=self.config_data.get('cron'),
                 auto_restart=self.config_data.get('auto_restart', True),
                 env_vars=self.config_data.get('env_vars')
             )
 
-           # Run setup and deploy
+            # Run setup and deploy with better error handling
             setup_result = self.run_command(
-               f"pm2 deploy {config_path} production setup --force",
-               "Setup"
+                f"pm2 deploy {config_path} production setup --force",
+                "Setup"
             )
-           
+            
             if not setup_result.get('success'):
-               raise PM2CommandError(f"Setup failed: {setup_result.get('error')}")
+                raise PM2CommandError(f"Setup failed: {setup_result.get('error', 'Unknown error')}")
+
+            # Force clean the directory before deploy
+            clean_cmd = f"cd {process_dir} && rm -rf current source && git clone {self.config_data['repository']['url']} source"
+            clean_result = self.run_command(clean_cmd, "Clean")
+            
+            if not clean_result.get('success'):
+                raise PM2CommandError(f"Directory cleanup failed: {clean_result.get('error', 'Unknown error')}")
 
             deploy_result = self.run_command(
-               f"pm2 deploy {config_path} production --force",
-               "Deploy"
-           )
-           
+                f"pm2 deploy {config_path} production --force",
+                "Deploy"
+            )
+            
             if not deploy_result.get('success'):
-               raise PM2CommandError(f"Deploy failed: {deploy_result.get('error')}")
+                raise PM2CommandError(f"Deploy failed: {deploy_result.get('error', 'Unknown error')}")
 
-           # Start the process with PM2
+            # Start the process with PM2
             start_result = self.run_command(
-               f"pm2 start {config_path}",
-               "Start"
-           )
+                f"pm2 start {config_path}",
+                "Start"
+            )
 
             if not start_result.get('success'):
-               raise PM2CommandError(f"Start failed: {start_result.get('error')}")
+                raise PM2CommandError(f"Start failed: {start_result.get('error', 'Unknown error')}")
 
             self.result_queue.put({
-               "success": True,
-               "message": f"Process {self.name} created, deployed and started successfully",
-               "config_file": str(config_path)
+                "success": True,
+                "message": f"Process {self.name} created, deployed and started successfully",
+                "config_file": str(config_path)
             })
 
-       except Exception as e:
-           self.logger.error(f"Deployment failed: {str(e)}")
-           self.cleanup()
-           self.result_queue.put({
-               "success": False,
-               "message": f"Failed to deploy process {self.name}",
-               "error": str(e)
-           })
-
+        except Exception as e:
+            self.logger.error(f"Deployment failed: {str(e)}")
+            self.cleanup()
+            self.result_queue.put({
+                "success": False,
+                "message": f"Failed to deploy process {self.name}",
+                "error": str(e)
+            })
+            
+            
    def run_command(self, cmd: str, label: str) -> Dict:
        """Run command and capture output"""
        try:

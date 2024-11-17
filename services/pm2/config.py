@@ -4,25 +4,17 @@ from pathlib import Path
 from typing import Dict, Optional
 
 class PM2Config:
-    def __init__(self, logger: logging.Logger):
-        self.logger = logger
-
     def generate_config(self, name: str, repo_url: str, script: str = 'main.py', 
-                    cron: str = None, auto_restart: bool = True, env_vars: Dict[str, str] = None, branch: str = "main") -> Path:
+                       branch: str = "main", cron: str = None, 
+                       auto_restart: bool = True, 
+                       env_vars: Dict[str, str] = None) -> Path:
         """Create PM2 config file"""
         config_path = Path(f"/home/pm2/pm2-configs/{name}.config.js")
         
         # Use provided env vars or defaults
         default_env = {
             "PORT": "5001",
-            "HOST": "0.0.0.0",
-            "DEBUG": "False",
-            "LOG_LEVEL": "INFO",
-            "PM2_BIN": "pm2",
-            "MAX_LOG_LINES": "1000",
-            "COMMAND_TIMEOUT": "30",
-            "MAX_RETRIES": "3",
-            "RETRY_DELAY": "1"
+            "HOST": "0.0.0.0"
         }
         
         if env_vars:
@@ -82,15 +74,17 @@ module.exports = {{
             path: baseFolder,
             "pre-setup": `mkdir -p ${{baseFolder}}`,
             "pre-deploy": `mkdir -p ${{logsPath}} && rm -rf ${{venvPath}}`,
-            "post-deploy": `cd ${{processFolder}} && \\
-                git reset --hard && \\
-                git checkout {branch} && \\
-                git pull origin {branch} && \\
-                python3 -m venv ${{venvPath}} && \\
-                ${{venvPath}}/bin/pip install --upgrade pip && \\
-                if [ -f requirements.txt ]; then \\
-                    ${{venvPath}}/bin/pip install -r requirements.txt; \\
-                fi`
+            "post-deploy": `
+                cd ${{processFolder}} && 
+                git reset --hard && 
+                git checkout {branch} && 
+                git pull origin {branch} && 
+                python3 -m venv ${{venvPath}} && 
+                ${{venvPath}}/bin/pip install --upgrade pip && 
+                if [ -f requirements.txt ]; then 
+                    ${{venvPath}}/bin/pip install -r requirements.txt; 
+                fi
+            `.replace(/\n\s+/g, ' ')
         }}
     }}
 }};'''
@@ -100,3 +94,4 @@ module.exports = {{
             f.write(config_content)
         
         return config_path
+    
