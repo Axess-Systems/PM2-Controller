@@ -1,4 +1,3 @@
-# services/process/deployer.py
 import os
 import time
 import shutil
@@ -12,6 +11,7 @@ from queue import Empty
 from core.config import Config
 from core.exceptions import PM2CommandError
 from services.pm2.service import PM2Service
+
 
 class ProcessDeployer(Process):
     def __init__(self, config: Config, name: str, config_data: Dict, result_queue: Queue, logger: logging.Logger):
@@ -28,23 +28,21 @@ class ProcessDeployer(Process):
         try:
             self.logger.info(f"Starting deployment for process: {self.name}")
             self.logger.debug(f"Config data: {self.config_data}")
-            
+
             # Create directories
             base_path = Path("/home/pm2")
             config_dir = base_path / "pm2-configs"
             process_dir = base_path / "pm2-processes" / self.name
             logs_dir = process_dir / "logs"
 
-            # Create directories with logging
             for directory in [config_dir, process_dir, logs_dir]:
                 directory.mkdir(parents=True, exist_ok=True)
                 self.logger.debug(f"Created directory: {directory}")
 
-            # Print current directory state
             self.logger.debug(f"Base directory contents: {list(base_path.glob('*'))}")
             self.logger.debug(f"Config directory contents: {list(config_dir.glob('*'))}")
 
-            # Create config file 
+            # Create config file
             config_path = self.pm2_service.generate_config(
                 name=self.name,
                 repo_url=self.config_data['repository']['url'],
@@ -54,57 +52,45 @@ class ProcessDeployer(Process):
                 auto_restart=self.config_data.get('auto_restart', True),
                 env_vars=self.config_data.get('env_vars')
             )
-            
-            # Log config file contents
+
             self.logger.debug(f"Config file created at: {config_path}")
             with open(config_path, 'r') as f:
                 self.logger.debug(f"Config file contents:\n{f.read()}")
 
-            # Clean up existing deployment if any
             clean_cmd = f"rm -rf {process_dir}/current {process_dir}/source"
             clean_result = self.run_command(clean_cmd, "Cleanup")
             if not clean_result['success']:
                 self.logger.warning(f"Cleanup warning: {clean_result['stderr']}")
 
-            # Clone the repository first
             repo_url = self.config_data['repository']['url']
             branch = self.config_data['repository'].get('branch', 'main')
-            
+
             clone_cmd = f"git clone -b {branch} {repo_url} {process_dir}/source"
             clone_result = self.run_command(clone_cmd, "Git Clone")
-            
             if not clone_result['success']:
                 raise PM2CommandError(f"Git clone failed: {clone_result['stderr']}")
 
-            # Create the current directory and copy files
             current_dir = process_dir / "current"
             current_dir.mkdir(exist_ok=True)
-            
+
             copy_cmd = f"cp -r {process_dir}/source/* {current_dir}/"
             copy_result = self.run_command(copy_cmd, "Copy Files")
-            
             if not copy_result['success']:
                 raise PM2CommandError(f"File copy failed: {copy_result['stderr']}")
 
-            # Setup Python virtual environment
             venv_cmd = f"python3 -m venv {process_dir}/venv"
             venv_result = self.run_command(venv_cmd, "Create venv")
-            
             if not venv_result['success']:
                 raise PM2CommandError(f"Virtual environment creation failed: {venv_result['stderr']}")
 
-            # Install dependencies if requirements.txt exists
             if (current_dir / "requirements.txt").exists():
                 pip_cmd = f"{process_dir}/venv/bin/pip install -r {current_dir}/requirements.txt"
                 pip_result = self.run_command(pip_cmd, "Install Dependencies")
-                
                 if not pip_result['success']:
                     raise PM2CommandError(f"Dependencies installation failed: {pip_result['stderr']}")
 
-            # Start the process with PM2
             start_cmd = f"pm2 start {config_path}"
             start_result = self.run_command(start_cmd, "Start")
-            
             if not start_result['success']:
                 raise PM2CommandError(f"Process start failed: {start_result['stderr']}")
 
@@ -129,61 +115,39 @@ class ProcessDeployer(Process):
                 "traceback": traceback.format_exc()
             })
 
-
-
-    def run_command(self, cmd: str, action: str, timeout: int = 600) -> Dict:
-        """
-        Run a shell command asynchronously and capture output without blocking the API.
-
-        Args:
-            cmd: The shell command to execute.
-            action: Description of the action being performed.
-            timeout: Maximum time to wait for the command (if needed).
-
-        Returns:
-            A dictionary with the command's execution results.
-        """
+    def run_command(self, cmd: str, action: str, cwd: str = None, timeout: int = 600) -> Dict:
         try:
-            self.logger.info(f"Running {action} command: {cmd}")
-            
-            # Start the process asynchronously
+            self.logger.info(f"Running {action} command: {cmd} from {cwd or 'current directory'}")
             process = subprocess.Popen(
                 cmd,
                 shell=True,
+                cwd=cwd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
             )
-
-            # Optionally, wait for the command to complete (useful for specific cases)
             stdout, stderr = process.communicate(timeout=timeout)
             self.logger.debug(f"{action} command output: {stdout.strip()}")
-
             return {
                 "success": process.returncode == 0,
                 "stdout": stdout.strip(),
                 "stderr": stderr.strip(),
             }
-
         except subprocess.TimeoutExpired:
             self.logger.error(f"{action} command timed out after {timeout} seconds")
             return {"success": False, "stdout": "", "stderr": "Command timed out"}
-
         except Exception as e:
             self.logger.error(f"Error running {action} command: {e}")
             return {"success": False, "stdout": "", "stderr": str(e)}
-    
-           
+
     def cleanup(self):
         """Clean up resources on failure"""
         try:
             self.logger.info(f"Starting cleanup for failed deployment of {self.name}")
-            
-            # Clean up PM2 process if it exists
+
             pm2_delete = self.run_command(f"{self.config.PM2_BIN} delete {self.name}", "PM2 Delete")
             self.logger.debug(f"PM2 delete result: {pm2_delete}")
 
-            # Clean up files with logging
             config_file = Path(f"/home/pm2/pm2-configs/{self.name}.config.js")
             process_dir = Path(f"/home/pm2/pm2-processes/{self.name}")
 
