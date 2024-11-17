@@ -96,8 +96,7 @@ class PM2Config:
                     ${{venvPath}}/bin/pip install --upgrade pip && \\
                     if [ -f requirements.txt ]; then \\
                         ${{venvPath}}/bin/pip install -r requirements.txt; \\
-                    fi && \\
-                    pm2 start ${{configFile}}`
+                    fi`
             }}
         }}
     }};'''

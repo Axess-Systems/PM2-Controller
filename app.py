@@ -44,7 +44,7 @@ def create_app():
     """Create and configure the Flask application"""
     # Initialize Flask app
     app = Flask(__name__)
-    
+    app = setup_cors(app)
     # Enable proxy support
     app.wsgi_app = ProxyFix(app.wsgi_app)
     
