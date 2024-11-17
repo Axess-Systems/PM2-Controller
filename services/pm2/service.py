@@ -86,13 +86,17 @@ class PM2Service:
             raise PM2Error(f"Failed to get process details: {str(e)}")
 
     def generate_config(self, name: str, repo_url: str, script: str = 'main.py', 
-                       cron: str = None, auto_restart: bool = True, env_vars: Dict[str, str] = None) -> Path:
+                       branch: str = "main",  # Added branch parameter
+                       cron: str = None, 
+                       auto_restart: bool = True, 
+                       env_vars: Dict[str, str] = None) -> Path:
         """Generate PM2 configuration file using the config generator"""
         try:
             return self.config_generator.generate_config(
                 name=name,
                 repo_url=repo_url,
                 script=script,
+                branch=branch,  # Pass branch to config generator
                 cron=cron,
                 auto_restart=auto_restart,
                 env_vars=env_vars

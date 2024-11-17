@@ -19,7 +19,8 @@ class ProcessManager:
         self.config = config
         self.logger = logger
 
-    def create_process(self, config_data: Dict, timeout: int = 600) -> Dict:
+     def create_process(self, config_data: Dict, timeout: int = 600) -> Dict:
+        """Create a new PM2 process"""
         name = config_data["name"]
 
         if Path(f"/home/pm2/pm2-configs/{name}.config.js").exists():
@@ -38,8 +39,8 @@ class ProcessManager:
             deployer.start()
             result = result_queue.get(timeout=timeout)
 
-            if not result["success"]:
-                raise PM2CommandError(result["error"])
+            if not result.get("success"):  # Changed from result["success"]
+                raise PM2CommandError(result.get("error", "Unknown deployment error"))
 
             return result
 
@@ -48,7 +49,7 @@ class ProcessManager:
             raise PM2CommandError(f"Deployment timed out after {timeout} seconds")
         finally:
             deployer.join()
-
+            
     def delete_process(self, name: str) -> Dict:
         """Delete a process and its associated configuration files."""
         try:

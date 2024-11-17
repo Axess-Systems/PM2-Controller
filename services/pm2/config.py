@@ -15,7 +15,14 @@ class PM2Config:
         # Use provided env vars or defaults
         default_env = {
             "PORT": "5001",
-            "HOST": "0.0.0.0"
+            "HOST": "0.0.0.0",
+            "DEBUG": "False",
+            "LOG_LEVEL": "INFO",
+            "PM2_BIN": "pm2",
+            "MAX_LOG_LINES": "1000",
+            "COMMAND_TIMEOUT": "30",
+            "MAX_RETRIES": "3",
+            "RETRY_DELAY": "1"
         }
         
         if env_vars:
