@@ -44,13 +44,22 @@ def create_app():
     """Create and configure the Flask application"""
     # Initialize Flask app
     app = Flask(__name__)
-    app = setup_cors(app)
+    
     # Enable proxy support
     app.wsgi_app = ProxyFix(app.wsgi_app)
     
-    # Configure CORS
+    # Initialize API
+    api = Api(app, 
+        version='1.0', 
+        title='PM2 Controller API',
+        description='REST API for controlling PM2 processes',
+        doc='/',
+        prefix='/api'
+    )
+    
+    # Configure CORS - single configuration for both API and Swagger UI
     CORS(app, resources={
-        r"/api/*": {
+        r"/*": {  # This covers both /api/* and Swagger UI
             "origins": "*",
             "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
             "allow_headers": ["Content-Type", "Authorization"],
@@ -60,21 +69,24 @@ def create_app():
         }
     })
     
-    # Initialize API with CORS enabled
-    api = Api(app, 
-        version='1.0', 
-        title='PM2 Controller API',
-        description='REST API for controlling PM2 processes',
-        doc='/',
-        prefix='/api'
-    )
-    
-    # Add CORS headers to Swagger UI
+    # Add security headers and ensure single CORS header
     @app.after_request
-    def after_request(response):
-        response.headers.add('Access-Control-Allow-Origin', '*')
-        response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
-        response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+    def add_security_headers(response):
+        # Remove any existing CORS headers to prevent duplicates
+        response.headers.pop('Access-Control-Allow-Origin', None)
+        response.headers.pop('Access-Control-Allow-Headers', None)
+        response.headers.pop('Access-Control-Allow-Methods', None)
+        
+        # Add single CORS header
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, PUT, POST, DELETE, OPTIONS'
+        
+        # Add security headers
+        response.headers['X-Content-Type-Options'] = 'nosniff'
+        response.headers['X-Frame-Options'] = 'SAMEORIGIN'
+        response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
+        
         return response
     
     # Load configuration and setup logging
