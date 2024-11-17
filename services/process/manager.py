@@ -1,11 +1,13 @@
 # services/process/manager.py
 from multiprocessing import Queue
-from typing import Dict
+from typing import Dict, Optional
 from pathlib import Path
 import json
 import shutil
 import subprocess
 import logging
+import re
+from datetime import datetime
 
 from queue import Empty
 from core.config import Config
@@ -15,6 +17,7 @@ from core.exceptions import (
     ProcessAlreadyExistsError,
 )
 from .deployer import ProcessDeployer
+from services.pm2.service import PM2Service
 
 class ProcessManager:
     def __init__(self, config: Config, logger: logging.Logger):
@@ -26,6 +29,7 @@ class ProcessManager:
         """
         self.config = config
         self.logger = logger
+        self.pm2_service = PM2Service(config, logger)
 
     def create_process(self, config_data: Dict, timeout: int = 600) -> Dict:
         """Create a new PM2 process
@@ -217,56 +221,195 @@ class ProcessManager:
         try:
             self.logger.info(f"Updating process: {name}")
             
+            config_path = Path(f"/home/pm2/pm2-configs/{name}.config.js")
             process_dir = Path(f"/home/pm2/pm2-processes/{name}/current")
+            
+            if not config_path.exists():
+                raise ProcessNotFoundError(f"Config file not found for {name}")
+            
             if not process_dir.exists():
                 raise ProcessNotFoundError(f"Process directory not found: {process_dir}")
 
-            # Pull latest changes
-            git_pull = subprocess.run(
-                "git pull",
-                shell=True,
-                cwd=process_dir,
-                capture_output=True,
-                text=True
-            )
-            
-            if git_pull.returncode != 0:
-                raise PM2CommandError(f"Git pull failed: {git_pull.stderr}")
-
-            # Install dependencies if requirements.txt exists
-            requirements_file = process_dir / "requirements.txt"
-            if requirements_file.exists():
-                venv_pip = Path(f"/home/pm2/pm2-processes/{name}/venv/bin/pip")
-                pip_install = subprocess.run(
-                    f"{venv_pip} install -r {requirements_file}",
-                    shell=True,
-                    capture_output=True,
-                    text=True
-                )
-                
-                if pip_install.returncode != 0:
-                    raise PM2CommandError(f"Dependencies installation failed: {pip_install.stderr}")
-
-            # Restart the process
-            restart_result = subprocess.run(
-                f"{self.config.PM2_BIN} restart {name}",
+            # Run PM2 deploy update command
+            deploy_cmd = f"pm2 deploy {config_path} production update --force"
+            deploy_result = subprocess.run(
+                deploy_cmd,
                 shell=True,
                 capture_output=True,
                 text=True
             )
             
-            if restart_result.returncode != 0:
-                raise PM2CommandError(f"Process restart failed: {restart_result.stderr}")
+            if deploy_result.returncode != 0:
+                raise PM2CommandError(f"Deploy update failed: {deploy_result.stderr}")
+
+            # Start the process with updated config
+            start_cmd = f"pm2 start {config_path}"
+            start_result = subprocess.run(
+                start_cmd,
+                shell=True,
+                capture_output=True,
+                text=True
+            )
+            
+            if start_result.returncode != 0:
+                raise PM2CommandError(f"Process start failed: {start_result.stderr}")
+
+            # Save PM2 process list
+            save_result = subprocess.run(
+                "pm2 save",
+                shell=True,
+                capture_output=True,
+                text=True
+            )
+            
+            if save_result.returncode != 0:
+                self.logger.warning(f"PM2 save failed: {save_result.stderr}")
 
             self.logger.info(f"Process {name} updated successfully")
             return {
                 "success": True,
                 "message": f"Process {name} updated successfully",
                 "process_name": name,
-                "git_output": git_pull.stdout,
-                "restart_output": restart_result.stdout
+                "deploy_output": deploy_result.stdout,
+                "start_output": start_result.stdout,
+                "save_output": save_result.stdout
             }
             
         except Exception as e:
             self.logger.error(f"Failed to update process {name}: {str(e)}", exc_info=True)
             raise
+
+    def update_config(self, name: str, config_data: Dict) -> Dict:
+        """Update process configuration
+        
+        Args:
+            name: Name of the process
+            config_data: New configuration data
+            
+        Returns:
+            Dict containing update status
+            
+        Raises:
+            ProcessNotFoundError: If process doesn't exist
+            PM2CommandError: If update fails
+        """
+        try:
+            self.logger.info(f"Updating configuration for process: {name}")
+            self.logger.debug(f"New configuration: {json.dumps(config_data, indent=2)}")
+
+            # Check if process exists
+            config_file = Path(f"/home/pm2/pm2-configs/{name}.config.js")
+            if not config_file.exists():
+                raise ProcessNotFoundError(f"Config file not found for {name}")
+
+            # Read current config
+            current_config = self.get_process_config(name)
+
+            # Generate updated config file
+            backup_file = config_file.with_suffix('.backup')
+            shutil.copy2(config_file, backup_file)
+
+            try:
+                # Update the config file
+                with open(config_file, 'w') as f:
+                    f.write(self._update_config_content(current_config['content'], config_data))
+
+                # Reload the process with new config
+                reload_result = subprocess.run(
+                    f"pm2 reload {name}",
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    check=True
+                )
+
+                return {
+                    "success": True,
+                    "message": f"Configuration updated for process {name}",
+                    "config_file": str(config_file),
+                    "reload_output": reload_result.stdout
+                }
+
+            except Exception as e:
+                # Restore backup on failure
+                if backup_file.exists():
+                    shutil.copy2(backup_file, config_file)
+                raise e
+
+            finally:
+                # Clean up backup
+                if backup_file.exists():
+                    backup_file.unlink()
+
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"Failed to reload process: {e.stderr}")
+            raise PM2CommandError(f"Failed to reload process: {e.stderr}")
+        except Exception as e:
+            self.logger.error(f"Failed to update config for {name}: {str(e)}")
+            raise PM2CommandError(f"Config update failed: {str(e)}")
+
+    def _update_config_content(self, current_content: str, new_config: Dict) -> str:
+        """Update config file content with new values
+        
+        Args:
+            current_content: Current config file content
+            new_config: New configuration values
+            
+        Returns:
+            Updated config file content
+        """
+        content = current_content
+
+        # Update basic fields
+        if 'script' in new_config:
+            content = re.sub(
+                r'script:\s*[\'"].*?[\'"]',
+                f'script: "{new_config["script"]}"',
+                content
+            )
+
+        if 'cron' in new_config:
+            if new_config['cron']:
+                if 'cron_restart' not in content:
+                    content = content.replace(
+                        'watch: false,',
+                        f'watch: false,\n        cron_restart: "{new_config["cron"]},"'
+                    )
+                else:
+                    content = re.sub(
+                        r'cron_restart:\s*[\'"].*?[\'"]',
+                        f'cron_restart: "{new_config["cron"]}"',
+                        content
+                    )
+            else:
+                content = re.sub(r',?\s*cron_restart:\s*[\'"].*?[\'"]', '', content)
+
+        if 'auto_restart' in new_config:
+            content = re.sub(
+                r'autorestart:\s*\w+',
+                f'autorestart: {str(new_config["auto_restart"]).lower()}',
+                content
+            )
+
+        # Update environment variables
+        if 'env_vars' in new_config and new_config['env_vars']:
+            env_vars = new_config['env_vars']
+            env_block = '    env: {\n'
+            for key, value in env_vars.items():
+                env_block += f'        {key}: "{value}",\n'
+            env_block += '    },'
+
+            if 'env:' in content:
+                content = re.sub(
+                    r'env:\s*{[^}]*}',
+                    env_block.strip(),
+                    content,
+                    flags=re.DOTALL
+                )
+            else:
+                content = content.replace(
+                    'watch: false,',
+                    f'watch: false,\n{env_block}'
+                )
+
+        return content
