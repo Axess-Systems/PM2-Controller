@@ -6,7 +6,8 @@ import json
 import shutil
 import subprocess
 import logging
-import traceback
+
+from queue import Empty
 from core.config import Config
 from core.exceptions import (
     PM2CommandError,
