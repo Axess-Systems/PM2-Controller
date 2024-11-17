@@ -19,7 +19,7 @@ class ProcessManager:
         self.config = config
         self.logger = logger
 
-     def create_process(self, config_data: Dict, timeout: int = 600) -> Dict:
+    def create_process(self, config_data: Dict, timeout: int = 600) -> Dict:
         """Create a new PM2 process"""
         name = config_data["name"]
 
