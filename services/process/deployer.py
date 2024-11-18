@@ -125,44 +125,66 @@ class ProcessDeployer(Process):
     
     def run_command(self, cmd: str, action: str, cwd: str = None, timeout: int = 600) -> Dict:
         try:
+            # Special handling for PM2 start command
             if "pm2 start" in cmd:
                 cwd = "/home/pm2/pm2-configs"
                 config_name = Path(cmd.split()[-1]).name
-                start_cmd = f"pm2 start {config_name}"
+                process_name = config_name.replace('.config.js', '')
                 
-                # Run pm2 start without waiting for output
-                subprocess.run(start_cmd, shell=True, cwd=cwd)
-                time.sleep(2)  # Brief pause to let process start
-                
-                # Check process status
-                process_list = json.loads(subprocess.check_output(
-                    "pm2 jlist",
+                # Run the start command without waiting for output
+                subprocess.run(
+                    f"pm2 start {config_name}",
                     shell=True,
-                    text=True
-                ))
-                
-                # Look for our process
-                process = next((p for p in process_list if p["name"] == self.name), None)
-                if process and process.get("pm2_env", {}).get("status") == "online":
-                    return {"success": True, "stdout": "Process started", "stderr": ""}
-                else:
-                    return {"success": False, "stdout": "", "stderr": "Process failed to start"}
-                
-            else:
-                # Regular command execution
-                output = subprocess.check_output(
-                    cmd,
-                    shell=True,
-                    cwd=cwd,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    timeout=timeout
+                    cwd=cwd
                 )
-                return {"success": True, "stdout": output.strip(), "stderr": ""}
                 
+                # Check process status through pm2 jlist
+                try:
+                    process_list = json.loads(
+                        subprocess.check_output(
+                            "pm2 jlist",
+                            shell=True,
+                            text=True
+                        )
+                    )
+                    
+                    process = next((p for p in process_list if p["name"] == process_name), None)
+                    if process:
+                        status = process.get("pm2_env", {}).get("status")
+                        if status == "online":
+                            return {"success": True, "stdout": f"Process {process_name} started", "stderr": ""}
+                        else:
+                            return {"success": False, "stdout": "", "stderr": f"Process status: {status}"}
+                    else:
+                        return {"success": False, "stdout": "", "stderr": f"Process {process_name} not found"}
+                        
+                except Exception as e:
+                    return {"success": False, "stdout": "", "stderr": f"Failed to verify process status: {str(e)}"}
+            
+            # Normal command handling for other commands
+            self.logger.info(f"Running {action} command: {cmd} from {cwd or 'current directory'}")
+            result = subprocess.run(
+                cmd,
+                shell=True,
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                timeout=timeout
+            )
+            
+            return {
+                "success": result.returncode == 0,
+                "stdout": result.stdout.strip(),
+                "stderr": result.stderr.strip(),
+            }
+                
+        except subprocess.TimeoutExpired as e:
+            self.logger.error(f"{action} command timed out after {timeout} seconds")
+            return {"success": False, "stdout": "", "stderr": f"Command timed out after {timeout} seconds"}
         except Exception as e:
             self.logger.error(f"Error running {action} command: {e}")
-            return {"success": False, "stdout": "", "stderr": str(e)}    
+            return {"success": False, "stdout": "", "stderr": str(e)}
+
 
     def cleanup(self):
         """Clean up resources on failure"""
