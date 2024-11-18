@@ -1,3 +1,5 @@
+# services/process/manager.py
+
 import os
 import time
 import shutil
@@ -10,12 +12,11 @@ from typing import Dict
 from multiprocessing import Process, Queue, Lock
 from queue import Empty
 from core.config import Config
-from core.exceptions import PM2CommandError
+from core.exceptions import PM2CommandError, ProcessAlreadyExistsError
 from services.pm2.service import PM2Service
 
-
 class ProcessDeployer(Process):
-    def __init__(self, config: Config, name: str, config_data: Dict, result_queue: Queue, logger: logging.Logger, lock: Lock):
+    def __init__(self, config: Config, name: str, config_data: Dict, result_queue: Queue, logger: logging.Logger, lock: Lock = None):
         super().__init__()
         self.config = config
         self.name = name
@@ -23,8 +24,8 @@ class ProcessDeployer(Process):
         self.result_queue = result_queue
         self.logger = logger
         self.pm2_service = PM2Service(config, logger)
-        self.lock = lock
-
+        self.lock = lock or Lock()
+        
     def run(self):
         """Execute deployment process"""
         try:
@@ -135,17 +136,16 @@ class ProcessDeployer(Process):
 
 class ProcessManager:
     def __init__(self, config: Config, logger: logging.Logger):
-        """Initialize ProcessManager"""
         self.config = config
         self.logger = logger
         self.pm2_service = PM2Service(config, logger)
         self.deployment_lock = Lock()
 
     def create_process(self, config_data: Dict, timeout: int = 600) -> Dict:
-        """Create a new PM2 process"""
         try:
             name = config_data["name"]
             self.logger.info(f"Creating new process: {name}")
+            
             config_path = Path(f"/home/pm2/pm2-configs/{name}.config.js")
             if config_path.exists():
                 raise ProcessAlreadyExistsError(f"Process {name} already exists")
@@ -157,26 +157,42 @@ class ProcessManager:
                 config_data=config_data,
                 result_queue=result_queue,
                 logger=self.logger,
-                lock=self.deployment_lock
+                lock=self.deployment_lock  # Pass the lock here
             )
+
+            self.logger.debug("Starting deployment process")
             deployer.start()
 
             try:
                 result = result_queue.get(timeout=timeout)
-                if not result.get("success"):
+                if not result:
+                    raise PM2CommandError("Deployment failed: No result received")
+                    
+                if not result.get("success", False):
                     error_msg = result.get("error") or result.get("message") or "Unknown deployment error"
+                    self.logger.error(f"Deployment failed: {error_msg}")
                     raise PM2CommandError(error_msg)
-                return result
+                
+                self.logger.info(f"Process {name} created successfully")
+                return {
+                    "success": True,
+                    "message": f"Process {name} created successfully",
+                    "process_name": name,
+                    "config_file": result.get("config_file"),
+                    "details": result.get("details", {})
+                }
+                
             except Empty:
+                self.logger.error(f"Deployment timed out after {timeout} seconds")
                 deployer.terminate()
-                deployer.join()
                 raise PM2CommandError(f"Deployment timed out after {timeout} seconds")
-
+            finally:
+                deployer.join()
+                
         except (ProcessAlreadyExistsError, PM2CommandError):
             raise
         except Exception as e:
             self.logger.error(f"Process creation failed: {str(e)}", exc_info=True)
             raise PM2CommandError(f"Process creation failed: {str(e)}")
-
 
 
