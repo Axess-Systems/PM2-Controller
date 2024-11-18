@@ -206,44 +206,54 @@ class ProcessManager:
             raise PM2CommandError(f"Failed to get process config: {str(e)}")
 
     def update_process(self, name: str) -> Dict:
-        """Update process code and restart
-        
-        Args:
-            name: Name of the process
-            
-        Returns:
-            Dict with update status
-            
-        Raises:
-            ProcessNotFoundError: If process doesn't exist
-            PM2CommandError: If update fails
-        """
+        """Update process code and restart"""
         try:
             self.logger.info(f"Updating process: {name}")
             
             config_path = Path(f"/home/pm2/pm2-configs/{name}.config.js")
-            process_dir = Path(f"/home/pm2/pm2-processes/{name}/current")
+            process_dir = Path(f"/home/pm2/pm2-processes/{name}")
+            current_dir = process_dir / "current"
             
             if not config_path.exists():
                 raise ProcessNotFoundError(f"Config file not found for {name}")
             
-            if not process_dir.exists():
-                raise ProcessNotFoundError(f"Process directory not found: {process_dir}")
+            if not current_dir.exists():
+                raise ProcessNotFoundError(f"Process directory not found: {current_dir}")
 
-            # Run PM2 deploy update command
-            deploy_cmd = f"pm2 deploy {config_path} production update --force"
-            deploy_result = subprocess.run(
-                deploy_cmd,
-                shell=True,
-                capture_output=True,
-                text=True
-            )
-            
-            if deploy_result.returncode != 0:
-                raise PM2CommandError(f"Deploy update failed: {deploy_result.stderr}")
+            # First do git pull in source directory
+            source_dir = process_dir / "source"
+            if source_dir.exists():
+                git_pull = subprocess.run(
+                    "git pull",
+                    shell=True,
+                    cwd=source_dir,
+                    capture_output=True,
+                    text=True
+                )
+                
+                if git_pull.returncode != 0:
+                    raise PM2CommandError(f"Git pull failed: {git_pull.stderr}")
 
-            # Start the process with updated config
-            start_cmd = f"pm2 start {config_path}"
+                # Copy updated files to current directory
+                shutil.rmtree(current_dir)
+                shutil.copytree(source_dir, current_dir, dirs_exist_ok=True)
+
+            # Install dependencies if requirements.txt exists
+            requirements_file = current_dir / "requirements.txt"
+            if requirements_file.exists():
+                venv_pip = process_dir / "venv/bin/pip"
+                pip_install = subprocess.run(
+                    f"{venv_pip} install -r {requirements_file}",
+                    shell=True,
+                    capture_output=True,
+                    text=True
+                )
+                
+                if pip_install.returncode != 0:
+                    raise PM2CommandError(f"Dependencies installation failed: {pip_install.stderr}")
+
+            # Start/restart the process with config
+            start_cmd = f"pm2 start {config_path} --force"
             start_result = subprocess.run(
                 start_cmd,
                 shell=True,
@@ -270,7 +280,7 @@ class ProcessManager:
                 "success": True,
                 "message": f"Process {name} updated successfully",
                 "process_name": name,
-                "deploy_output": deploy_result.stdout,
+                "update_output": git_pull.stdout if 'git_pull' in locals() else "",
                 "start_output": start_result.stdout,
                 "save_output": save_result.stdout
             }
