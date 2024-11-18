@@ -125,9 +125,11 @@ class ProcessDeployer(Process):
     
     def run_command(self, cmd: str, action: str, cwd: str = None, timeout: int = 600) -> Dict:
         try:
-           
+            # Set correct directory and command for PM2 start
             if "pm2 start" in cmd:
                 cwd = "/home/pm2/pm2-configs"
+                # Extract just the config filename from the full path
+                cmd = f"pm2 start {Path(cmd.split()[-1]).name}"
                 
             self.logger.info(f"Running {action} command: {cmd} from {cwd or 'current directory'}")
             process = subprocess.Popen(
@@ -151,7 +153,8 @@ class ProcessDeployer(Process):
         except Exception as e:
             self.logger.error(f"Error running {action} command: {e}")
             return {"success": False, "stdout": "", "stderr": str(e)}
-
+        
+    
 
     def cleanup(self):
         """Clean up resources on failure"""
