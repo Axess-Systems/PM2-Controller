@@ -128,39 +128,35 @@ class ProcessDeployer(Process):
             if "pm2 start" in cmd:
                 cwd = "/home/pm2/pm2-configs"
                 cmd = f"pm2 start {Path(cmd.split()[-1]).name}"
-                timeout = 15  # Shorter timeout for start command
+                timeout = 15
                 
             self.logger.info(f"Running {action} command: {cmd} from {cwd or 'current directory'}")
-            process = subprocess.Popen(
-                cmd,
-                shell=True,
-                cwd=cwd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
             
             try:
-                stdout, stderr = process.communicate(timeout=timeout)
-                # Kill process if it's still running
-                if process.poll() is None:
-                    process.kill()
-                    process.wait()
-                
+                output = subprocess.check_output(
+                    cmd,
+                    shell=True,
+                    cwd=cwd,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    timeout=timeout
+                )
                 return {
-                    "success": process.returncode == 0,
-                    "stdout": stdout.strip(),
-                    "stderr": stderr.strip(),
+                    "success": True,
+                    "stdout": output.strip(),
+                    "stderr": ""
                 }
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
+            except subprocess.TimeoutExpired as e:
                 self.logger.error(f"{action} command timed out after {timeout} seconds")
-                return {"success": False, "stdout": "", "stderr": "Command timed out"}
+                return {"success": False, "stdout": "", "stderr": str(e)}
+            except subprocess.CalledProcessError as e:
+                self.logger.error(f"{action} command failed: {e.output}")
+                return {"success": False, "stdout": "", "stderr": e.output}
                 
         except Exception as e:
             self.logger.error(f"Error running {action} command: {e}")
             return {"success": False, "stdout": "", "stderr": str(e)}
+    
 
     def cleanup(self):
         """Clean up resources on failure"""
