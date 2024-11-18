@@ -146,13 +146,15 @@ class ProcessManager:
             name = config_data["name"]
             self.logger.info(f"Creating new process: {name}")
             result_queue = Queue()
+            
+            # Pass the lock to the ProcessDeployer
             deployer = ProcessDeployer(
                 config=self.config,
                 name=name,
                 config_data=config_data,
                 result_queue=result_queue,
                 logger=self.logger,
-                lock=self.lock
+                lock=self.lock  # Add the lock here
             )
             deployer.start()
             result = result_queue.get(timeout=timeout)
@@ -165,3 +167,7 @@ class ProcessManager:
             raise PM2CommandError("Deployment timed out")
         except Exception as e:
             raise PM2CommandError(f"Process creation failed: {str(e)}")
+
+
+
+
