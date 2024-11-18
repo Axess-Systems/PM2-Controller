@@ -135,39 +135,48 @@ class ProcessDeployer(Process):
 
 class ProcessManager:
     def __init__(self, config: Config, logger: logging.Logger):
+        """Initialize ProcessManager"""
         self.config = config
         self.logger = logger
         self.pm2_service = PM2Service(config, logger)
-        self.lock = Lock()
+        self.deployment_lock = Lock()
 
     def create_process(self, config_data: Dict, timeout: int = 600) -> Dict:
         """Create a new PM2 process"""
         try:
             name = config_data["name"]
             self.logger.info(f"Creating new process: {name}")
+            config_path = Path(f"/home/pm2/pm2-configs/{name}.config.js")
+            if config_path.exists():
+                raise ProcessAlreadyExistsError(f"Process {name} already exists")
+
             result_queue = Queue()
-            
-            # Pass the lock to the ProcessDeployer
             deployer = ProcessDeployer(
                 config=self.config,
                 name=name,
                 config_data=config_data,
                 result_queue=result_queue,
                 logger=self.logger,
-                lock=self.lock  # Add the lock here
+                lock=self.deployment_lock
             )
             deployer.start()
-            result = result_queue.get(timeout=timeout)
-            if not result.get("success"):
-                raise PM2CommandError(result.get("error", "Unknown deployment error"))
-            return result
-        except Empty:
-            deployer.terminate()
-            deployer.join()
-            raise PM2CommandError("Deployment timed out")
-        except Exception as e:
-            raise PM2CommandError(f"Process creation failed: {str(e)}")
 
+            try:
+                result = result_queue.get(timeout=timeout)
+                if not result.get("success"):
+                    error_msg = result.get("error") or result.get("message") or "Unknown deployment error"
+                    raise PM2CommandError(error_msg)
+                return result
+            except Empty:
+                deployer.terminate()
+                deployer.join()
+                raise PM2CommandError(f"Deployment timed out after {timeout} seconds")
+
+        except (ProcessAlreadyExistsError, PM2CommandError):
+            raise
+        except Exception as e:
+            self.logger.error(f"Process creation failed: {str(e)}", exc_info=True)
+            raise PM2CommandError(f"Process creation failed: {str(e)}")
 
 
 
