@@ -6,7 +6,7 @@ import shutil
 import logging
 import subprocess
 import traceback
-import json
+import threading
 from pathlib import Path
 from typing import Dict
 from multiprocessing import Process, Queue, Lock
@@ -103,21 +103,53 @@ class ProcessDeployer(Process):
             })
 
     def _run_command(self, cmd: str, action: str, cwd: Path = None, timeout: int = 600) -> None:
-        """Run a shell command and handle output"""
+        """Run a shell command and handle output in real-time"""
         self.logger.info(f"Executing {action} command: {cmd}")
         try:
             process = subprocess.Popen(
                 cmd, shell=True, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
             )
-            stdout, stderr = process.communicate(timeout=timeout)
+            stdout_lines = []
+            stderr_lines = []
+
+            # Function to read stdout in real-time
+            def read_stdout():
+                for line in iter(process.stdout.readline, ""):
+                    stdout_lines.append(line.strip())
+                    self.logger.debug(f"{action} STDOUT: {line.strip()}")
+
+            # Function to read stderr in real-time
+            def read_stderr():
+                for line in iter(process.stderr.readline, ""):
+                    stderr_lines.append(line.strip())
+                    self.logger.debug(f"{action} STDERR: {line.strip()}")
+
+            stdout_thread = threading.Thread(target=read_stdout)
+            stderr_thread = threading.Thread(target=read_stderr)
+
+            stdout_thread.start()
+            stderr_thread.start()
+
+            # Wait for the process to complete or timeout
+            stdout_thread.join(timeout)
+            stderr_thread.join(timeout)
+
+            process.wait(timeout=timeout)
+
             if process.returncode != 0:
-                raise PM2CommandError(f"{action} failed: {stderr.strip()}")
-            self.logger.info(f"{action} succeeded: {stdout.strip()}")
+                raise PM2CommandError(f"{action} failed: {' '.join(stderr_lines)}")
+
+            self.logger.info(f"{action} succeeded: {' '.join(stdout_lines)}")
         except subprocess.TimeoutExpired:
             process.kill()
             raise PM2CommandError(f"{action} command timed out")
         except Exception as e:
             raise PM2CommandError(f"{action} encountered an error: {str(e)}")
+        finally:
+            # Ensure streams are closed
+            process.stdout.close()
+            process.stderr.close()
+
 
     def cleanup(self):
         """Clean up resources on failure"""
