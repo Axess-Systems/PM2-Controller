@@ -127,12 +127,29 @@ class ProcessDeployer(Process):
         try:
             if "pm2 start" in cmd:
                 cwd = "/home/pm2/pm2-configs"
-                cmd = f"pm2 start {Path(cmd.split()[-1]).name}"
-                timeout = 15
+                config_name = Path(cmd.split()[-1]).name
+                start_cmd = f"pm2 start {config_name}"
                 
-            self.logger.info(f"Running {action} command: {cmd} from {cwd or 'current directory'}")
-            
-            try:
+                # Run pm2 start without waiting for output
+                subprocess.run(start_cmd, shell=True, cwd=cwd)
+                time.sleep(2)  # Brief pause to let process start
+                
+                # Check process status
+                process_list = json.loads(subprocess.check_output(
+                    "pm2 jlist",
+                    shell=True,
+                    text=True
+                ))
+                
+                # Look for our process
+                process = next((p for p in process_list if p["name"] == self.name), None)
+                if process and process.get("pm2_env", {}).get("status") == "online":
+                    return {"success": True, "stdout": "Process started", "stderr": ""}
+                else:
+                    return {"success": False, "stdout": "", "stderr": "Process failed to start"}
+                
+            else:
+                # Regular command execution
                 output = subprocess.check_output(
                     cmd,
                     shell=True,
@@ -141,22 +158,11 @@ class ProcessDeployer(Process):
                     text=True,
                     timeout=timeout
                 )
-                return {
-                    "success": True,
-                    "stdout": output.strip(),
-                    "stderr": ""
-                }
-            except subprocess.TimeoutExpired as e:
-                self.logger.error(f"{action} command timed out after {timeout} seconds")
-                return {"success": False, "stdout": "", "stderr": str(e)}
-            except subprocess.CalledProcessError as e:
-                self.logger.error(f"{action} command failed: {e.output}")
-                return {"success": False, "stdout": "", "stderr": e.output}
+                return {"success": True, "stdout": output.strip(), "stderr": ""}
                 
         except Exception as e:
             self.logger.error(f"Error running {action} command: {e}")
-            return {"success": False, "stdout": "", "stderr": str(e)}
-    
+            return {"success": False, "stdout": "", "stderr": str(e)}    
 
     def cleanup(self):
         """Clean up resources on failure"""
