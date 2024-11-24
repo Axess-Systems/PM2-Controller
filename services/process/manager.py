@@ -36,82 +36,123 @@ class ProcessManager:
 
 
 
-    def create_process(self, config_data: Dict, timeout: int = 600) -> Dict:
-        """Create a new PM2 process using the worker script
-        
-        Args:
-            config_data: Dictionary containing process configuration
-            timeout: Maximum time to wait for deployment in seconds
-            
-        Returns:
-            Dict with deployment result
-            
-        Raises:
-            ProcessAlreadyExistsError: If process already exists
-            PM2CommandError: If deployment fails
-        """
+    def create_process(self, config_data: Dict) -> Dict:
+        """Create a new PM2 process using PM2's Python API"""
         try:
             name = config_data["name"]
             self.logger.info(f"Creating new process: {name}")
             
+            # Setup paths
+            base_path = Path("/home/pm2")
+            config_dir = base_path / "pm2-configs"
+            process_dir = base_path / "pm2-processes" / name
+            logs_dir = process_dir / "logs"
+            current_dir = process_dir / "current"
+            venv_path = process_dir / "venv"
+            
             # Check if process already exists
-            config_path = Path(f"/home/pm2/pm2-configs/{name}.config.js")
+            config_path = config_dir / f"{name}.config.js"
             if config_path.exists():
                 raise ProcessAlreadyExistsError(f"Process {name} already exists")
+
+            # Create directories
+            for directory in [config_dir, process_dir, logs_dir, current_dir]:
+                directory.mkdir(parents=True, exist_ok=True)
+
+            # Clone repository
+            repo_url = config_data['repository']['url']
+            branch = config_data['repository'].get('branch', 'main')
             
-            # Write process configuration to temporary file
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as temp_file:
-                json.dump(config_data, temp_file, indent=2)
-                temp_path = temp_file.name
-                temp_file.flush()  # Ensure all data is written
-            
-            try:
-                # Find worker script relative to current file
-                worker_script = Path(__file__).parent.parent.parent / "workers" / "pm2_worker.py"
-                
-                if not worker_script.exists():
-                    raise PM2CommandError(f"Worker script not found at {worker_script}")
-                
-                self.logger.debug(f"Running worker script: {worker_script} with config: {temp_path}")
-                
-                result = subprocess.run(
-                    [str(worker_script), temp_path],
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout
-                )
-                
-                if result.returncode != 0:
-                    error_msg = result.stderr.strip() or result.stdout.strip() or "Unknown error"
-                    raise PM2CommandError(f"Worker failed: {error_msg}")
-                
-                try:
-                    worker_result = json.loads(result.stdout)
-                except json.JSONDecodeError:
-                    raise PM2CommandError(
-                        f"Failed to parse worker output. STDOUT: {result.stdout}, STDERR: {result.stderr}"
-                    )
-                
-                if not worker_result.get('success'):
-                    raise PM2CommandError(worker_result.get('error', 'Unknown worker error'))
-                
-                self.logger.info(f"Process {name} created successfully")
-                return worker_result
-                
-            finally:
-                # Clean up temporary config file
-                Path(temp_path).unlink(missing_ok=True)
-                
+            os.system(f"git clone -b {branch} {repo_url} {current_dir}")
+
+            # Setup virtual environment
+            os.system(f"python3 -m venv {venv_path}")
+
+            # Install dependencies if requirements.txt exists
+            requirements_file = current_dir / "requirements.txt"
+            if requirements_file.exists():
+                os.system(f"{venv_path}/bin/pip install -r {requirements_file}")
+
+            # Generate PM2 config
+            config_content = self._generate_pm2_config(
+                name=name,
+                script=config_data.get('script', 'app.py'),
+                current_dir=current_dir,
+                venv_path=venv_path,
+                logs_dir=logs_dir,
+                env_vars=config_data.get('env_vars', {}),
+                auto_restart=config_data.get('auto_restart', True)
+            )
+
+            config_path.write_text(config_content)
+
+            # Start process using PM2's Python API
+            pm2.api.start(str(config_path))
+
+            self.logger.info(f"Process {name} created successfully")
+            return {
+                "success": True,
+                "message": f"Process {name} created successfully",
+                "process_name": name,
+                "config_file": str(config_path),
+            }
+
         except ProcessAlreadyExistsError:
             raise
-        except subprocess.TimeoutExpired:
-            error_msg = f"Worker timed out after {timeout} seconds"
-            self.logger.error(error_msg)
-            raise PM2CommandError(error_msg)
         except Exception as e:
             self.logger.error(f"Process creation failed: {str(e)}", exc_info=True)
-            raise PM2CommandError(f"Process creation failed: {str(e)}")                 
+            # Cleanup on failure
+            self._cleanup_failed_process(name, process_dir, config_path)
+            raise PM2CommandError(f"Process creation failed: {str(e)}")
 
+    def _generate_pm2_config(self, name: str, script: str, current_dir: Path, 
+                           venv_path: Path, logs_dir: Path, env_vars: Dict, 
+                           auto_restart: bool) -> str:
+        """Generate PM2 configuration file content"""
+        return f'''module.exports = {{
+    apps: [{{
+        name: "{name}",
+        script: "{venv_path}/bin/python",
+        args: "{script}",
+        cwd: "{current_dir}",
+        env: {json.dumps(env_vars)},
+        autorestart: {str(auto_restart).lower()},
+        watch: false,
+        ignore_watch: [
+            "venv",
+            "*.pyc",
+            "__pycache__",
+            "*.log"
+        ],
+        max_memory_restart: "1G",
+        error_file: "{logs_dir}/{name}-error.log",
+        out_file: "{logs_dir}/{name}-out.log",
+        merge_logs: true,
+        time: true,
+        log_date_format: "YYYY-MM-DD HH:mm:ss Z"
+    }}]
+}};'''
+
+    def _cleanup_failed_process(self, name: str, process_dir: Path, config_path: Path):
+        """Clean up resources after failed process creation"""
+        try:
+            # Try to remove from PM2
+            try:
+                pm2.api.delete(name)
+            except:
+                pass
+
+            # Remove process directory
+            if process_dir.exists():
+                shutil.rmtree(process_dir)
+
+            # Remove config file
+            if config_path.exists():
+                config_path.unlink()
+
+        except Exception as e:
+            self.logger.error(f"Cleanup failed: {str(e)}")
+            
     def delete_process(self, name: str) -> Dict:
         """Delete a process and its associated files
         
