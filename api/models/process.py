@@ -36,7 +36,7 @@ def create_api_models(api):
         'RETRY_DELAY': fields.String(description='Retry delay in seconds', default="1")
     })
 
-    # Model for creating new processes
+    # Model for creating new processes - keeping original structure
     new_process_model = api.model('NewProcess', {
         'name': fields.String(required=True, description='Process name'),
         'repository': fields.Nested(api.model('Repository', {
@@ -44,8 +44,11 @@ def create_api_models(api):
             'branch': fields.String(description='Git branch name', default='main')
         })),
         'script': fields.String(description='Python script to run', default='app.py'),
-        'cron': fields.String(description='Cron pattern for restart', default=''),
-        'auto_restart': fields.Boolean(description='Enable auto-restart', default=True),
+        'cron': fields.String(description='Cron pattern for restart', default=' '),
+        'auto_restart': fields.Boolean(description='Enable auto-restart', default=False),
+        'max_restarts': fields.String(description='Maximum number of restarts', default='3'),
+        'watch': fields.String(description='Enable file watching', default='False'),
+        'max_memory_restart': fields.String(description='Memory limit for restart', default='1G'),
         'env_vars': fields.Nested(env_config_model, description='Environment variables')
     })
 
