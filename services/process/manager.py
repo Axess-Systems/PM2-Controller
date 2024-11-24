@@ -16,7 +16,6 @@ from core.exceptions import (
     ProcessNotFoundError,
     ProcessAlreadyExistsError,
 )
-from .deployer import ProcessDeployer
 from services.pm2.service import PM2Service
 
 class ProcessManager:
@@ -32,7 +31,7 @@ class ProcessManager:
         self.pm2_service = PM2Service(config, logger)
 
     def create_process(self, config_data: Dict, timeout: int = 600) -> Dict:
-        """Create a new PM2 process
+        """Create a new PM2 process using the worker script
         
         Args:
             config_data: Dictionary containing process configuration
@@ -48,55 +47,64 @@ class ProcessManager:
         try:
             name = config_data["name"]
             self.logger.info(f"Creating new process: {name}")
-            self.logger.debug(f"Process configuration: {json.dumps(config_data, indent=2)}")
-
+            
+            # Check if process already exists
             config_path = Path(f"/home/pm2/pm2-configs/{name}.config.js")
             if config_path.exists():
                 raise ProcessAlreadyExistsError(f"Process {name} already exists")
-
-            result_queue = Queue()
-            deployer = ProcessDeployer(
-                config=self.config,
-                name=name,
-                config_data=config_data,
-                result_queue=result_queue,
-                logger=self.logger,
-            )
-
-            self.logger.debug("Starting deployment process")
-            deployer.start()
-
+            
+            # Write process configuration to temporary file
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as temp_file:
+                json.dump(config_data, temp_file, indent=2)
+                temp_path = temp_file.name
+            
             try:
-                result = result_queue.get(timeout=timeout)
-                if not result:
-                    raise PM2CommandError("Deployment failed: No result received")
-                    
-                if not result.get("success", False):
-                    error_msg = result.get("error") or result.get("message") or "Unknown deployment error"
-                    self.logger.error(f"Deployment failed: {error_msg}")
-                    raise PM2CommandError(error_msg)
+                # Find worker script relative to current file
+                worker_script = Path(__file__).parent.parent.parent / "workers" / "pm2_worker.py"
+                
+                if not worker_script.exists():
+                    raise PM2CommandError(f"Worker script not found at {worker_script}")
+                
+                self.logger.debug(f"Running worker script: {worker_script} with config: {temp_path}")
+                
+                result = subprocess.run(
+                    [str(worker_script), temp_path],
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout
+                )
+                
+                if result.returncode != 0:
+                    error_msg = result.stderr.strip() or result.stdout.strip() or "Unknown error"
+                    raise PM2CommandError(f"Worker failed: {error_msg}")
+                
+                try:
+                    worker_result = json.loads(result.stdout)
+                except json.JSONDecodeError:
+                    raise PM2CommandError(
+                        f"Failed to parse worker output. STDOUT: {result.stdout}, STDERR: {result.stderr}"
+                    )
+                
+                if not worker_result.get('success'):
+                    raise PM2CommandError(worker_result.get('error', 'Unknown worker error'))
                 
                 self.logger.info(f"Process {name} created successfully")
-                return {
-                    "success": True,
-                    "message": f"Process {name} created successfully",
-                    "process_name": name,
-                    "config_file": result.get("config_file"),
-                    "details": result.get("details", {})
-                }
+                return worker_result
                 
-            except Empty:
-                self.logger.error(f"Deployment timed out after {timeout} seconds")
-                deployer.terminate()
-                raise PM2CommandError(f"Deployment timed out after {timeout} seconds")
             finally:
-                deployer.join()
+                # Clean up temporary config file
+                Path(temp_path).unlink(missing_ok=True)
                 
-        except (ProcessAlreadyExistsError, PM2CommandError):
+        except ProcessAlreadyExistsError:
             raise
+        except subprocess.TimeoutExpired:
+            error_msg = f"Worker timed out after {timeout} seconds"
+            self.logger.error(error_msg)
+            raise PM2CommandError(error_msg)
         except Exception as e:
             self.logger.error(f"Process creation failed: {str(e)}", exc_info=True)
             raise PM2CommandError(f"Process creation failed: {str(e)}")
+        
 
     def delete_process(self, name: str) -> Dict:
         """Delete a process and its associated files
