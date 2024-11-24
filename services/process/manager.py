@@ -3,30 +3,22 @@
 
 # services/process/manager.py
 
+iimport json
 import os
-import sys
-import json
-import tempfile
-import subprocess
 import shutil
-try:
-    from pm2 import PM2
-except ImportError:
-    raise ImportError("python-pm2 package is required. Please install it using: pip install python-pm2")
-
 import logging
 from pathlib import Path
 from typing import Dict
 from datetime import datetime
-from core.config import Config
-from core.exceptions import ProcessAlreadyExistsError, PM2CommandError
+from multiprocessing import Process
+
 from core.config import Config
 from core.exceptions import (
     PM2CommandError,
     ProcessNotFoundError,
     ProcessAlreadyExistsError,
 )
-from services.pm2 import PM2Service, PM2Commands 
+from services.pm2 import PM2Service, PM2Commands
 
 class ProcessManager:
     def __init__(self, config: Config, logger: logging.Logger):
@@ -35,16 +27,6 @@ class ProcessManager:
         self.logger = logger
         self.pm2_service = PM2Service(config, logger)
         self.pm2_commands = PM2Commands(config, logger)
-     
-    def _start_pm2_process(self, config_file: Path):
-        """Start PM2 process in a separate process"""
-        try:
-            os.system(f"{self.config.PM2_BIN} start {config_file}")
-            os.system(f"{self.config.PM2_BIN} save")
-        except Exception as e:
-            self.logger.error(f"Failed to start PM2 process: {str(e)}")
-            sys.exit(1)
-
 
     def create_process(self, config_data: Dict) -> Dict:
         """Create a new PM2 process"""
@@ -92,42 +74,47 @@ class ProcessManager:
             config_file = config_dir / f"{name}.config.js"
             
             config_content = f'''module.exports = {{
-        apps: [{{
-            name: "{name}",
-            script: "{venv_path}/bin/python",
-            args: ["{current_dir}/{script}"],
-            cwd: "{current_dir}",
-            env: {json.dumps(config_data.get('env_vars', {}))},
-            autorestart: {str(config_data.get('auto_restart', True)).lower()},
-            watch: false,
-            ignore_watch: [
-                "venv",
-                "*.pyc",
-                "__pycache__",
-                "*.log"
-            ],
-            max_memory_restart: "1G",
-            error_file: "{logs_dir}/{name}-error.log",
-            out_file: "{logs_dir}/{name}-out.log",
-            merge_logs: true,
-            time: true,
-            log_date_format: "YYYY-MM-DD HH:mm:ss Z"
-        }}]
-    }};'''
+    apps: [{{
+        name: "{name}",
+        script: "{venv_path}/bin/python",
+        args: ["{current_dir}/{script}"],
+        cwd: "{current_dir}",
+        env: {json.dumps(config_data.get('env_vars', {}))},
+        autorestart: {str(config_data.get('auto_restart', True)).lower()},
+        watch: false,
+        ignore_watch: [
+            "venv",
+            "*.pyc",
+            "__pycache__",
+            "*.log"
+        ],
+        max_memory_restart: "1G",
+        error_file: "{logs_dir}/{name}-error.log",
+        out_file: "{logs_dir}/{name}-out.log",
+        merge_logs: true,
+        time: true,
+        log_date_format: "YYYY-MM-DD HH:mm:ss Z"
+    }}]
+}};'''
 
             config_file.write_text(config_content)
 
             # Start the process using PM2 command in a separate process
             self.logger.debug(f"Starting process with PM2: {name}")
             try:
+                # Define the PM2 start function
                 def _start_pm2_process():
                     try:
-                        start_result = os.system(f"{self.config.PM2_BIN} start {config_file}")
+                        start_cmd = f"{self.config.PM2_BIN} start {config_file}"
+                        self.logger.debug(f"Running PM2 start command: {start_cmd}")
+                        start_result = os.system(start_cmd)
                         if start_result != 0:
                             self.logger.error("PM2 start command failed")
                             return
                         
-                        save_result = os.system(f"{self.config.PM2_BIN} save")
+                        save_cmd = f"{self.config.PM2_BIN} save --force"
+                        self.logger.debug(f"Running PM2 save command: {save_cmd}")
+                        save_result = os.system(save_cmd)
                         if save_result != 0:
                             self.logger.error("PM2 save command failed")
                     except Exception as e:
@@ -154,7 +141,6 @@ class ProcessManager:
             self._cleanup_failed_process(name, process_dir)
             raise PM2CommandError(f"Process creation failed: {str(e)}")
 
-
     def _cleanup_failed_process(self, name: str, process_dir: Path):
         """Clean up resources after failed process creation"""
         try:
@@ -171,7 +157,8 @@ class ProcessManager:
 
         except Exception as e:
             self.logger.error(f"Cleanup failed: {str(e)}")
-
+            
+            
     def delete_process(self, name: str) -> Dict:
         """Delete a process"""
         try:
