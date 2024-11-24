@@ -20,6 +20,7 @@ def create_process_routes(namespace, services=None):
         @namespace.doc(
             responses={
                 200: 'Success',
+                
                 500: 'Internal server error'
             }
         )
