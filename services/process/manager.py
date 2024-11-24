@@ -86,14 +86,42 @@ class ProcessManager:
             script = config_data.get('script', 'app.py')
             config_file = config_dir / f"{name}.config.js"
             
-            config_content = f'''module.exports = {{
+            config_content = f'''// Process Configuration
+const processName = '{name}';
+const repoUrl = '{repo_url}';
+const processScript = `{script}`;
+const processCron = `{config_data.get('cron', '')}`;
+const autoRestart = {str(config_data.get('auto_restart', False)).lower()};
+const envConfig = {json.dumps(config_data.get('env_vars', {
+    'PORT': '5001',
+    'HOST': '0.0.0.0',
+    'DEBUG': 'False',
+    'LOG_LEVEL': 'DEBUG',
+    'PM2_BIN': 'pm2',
+    'MAX_LOG_LINES': '1000',
+    'COMMAND_TIMEOUT': '120',
+    'MAX_RETRIES': '3',
+    'RETRY_DELAY': '1'
+}), indent=4)};
+
+// Static Configuration
+const baseFolder = `/home/pm2/pm2-processes/${{processName}}`;
+const processFolder = `${{baseFolder}}/current`;
+const venvPath = `${{baseFolder}}/venv`;
+const logsPath = `${{baseFolder}}/logs`;
+const configFile = `/home/pm2/pm2-configs/${{processName}}.config.js`;
+
+module.exports = {{
     apps: [{{
-        name: "{name}",
-        script: "{venv_path}/bin/python",
-        args: ["{current_dir}/{script}"],
-        cwd: "{current_dir}",
-        env: {json.dumps(config_data.get('env_vars', {}))},
-        autorestart: {str(config_data.get('auto_restart', True)).lower()},
+        name: processName,
+        script: processScript,
+        cwd: processFolder,
+        args: `app:application --worker-class=gthread --workers=1 --threads=4 --timeout=120`,
+        interpreter: `${{venvPath}}/bin/python3`,
+        env: envConfig,
+        autorestart: autoRestart,
+        cron_restart: processCron,
+        max_restarts: 3,
         watch: false,
         ignore_watch: [
             "venv",
@@ -102,12 +130,35 @@ class ProcessManager:
             "*.log"
         ],
         max_memory_restart: "1G",
-        error_file: "{logs_dir}/{name}-error.log",
-        out_file: "{logs_dir}/{name}-out.log",
+        log_date_format: "YYYY-MM-DD HH:mm:ss Z",
+        error_file: `${{logsPath}}/${{processName}}-error.log`,
+        out_file: `${{logsPath}}/${{processName}}-out.log`,
+        combine_logs: true,
         merge_logs: true,
         time: true,
-        log_date_format: "YYYY-MM-DD HH:mm:ss Z"
-    }}]
+        pid_file: `${{logsPath}}/${{processName}}.pid`
+    }}],
+
+    deploy: {{
+        production: {{
+            user: "pm2",
+            host: ["localhost"],
+            ref: "{branch}",
+            repo: repoUrl,
+            path: baseFolder,
+            "pre-setup": `mkdir -p ${{baseFolder}}`,
+            "pre-deploy": `rm -rf ${{venvPath}} && mkdir -p ${{logsPath}}`,
+            "post-deploy": `mkdir -p ${{venvPath}} && \\
+                git reset --hard && \\
+                git pull origin {branch} && \\
+                python3 -m venv ${{venvPath}} && \\
+                ${{venvPath}}/bin/pip install --upgrade pip && \\
+                if [ -f ${{processFolder}}/requirements.txt ]; then \\
+                  ${{venvPath}}/bin/pip install -r ${{processFolder}}/requirements.txt; \\
+                fi && \\
+                pm2 start ${{configFile}}`
+        }}
+    }}
 }};'''
 
             config_file.write_text(config_content)
@@ -132,7 +183,8 @@ class ProcessManager:
             self.logger.error(f"Process creation failed: {str(e)}", exc_info=True)
             self._cleanup_failed_process(name, process_dir)
             raise PM2CommandError(f"Process creation failed: {str(e)}")
-
+        
+        
     def _cleanup_failed_process(self, name: str, process_dir: Path):
         """Clean up resources after failed process creation"""
         try:
