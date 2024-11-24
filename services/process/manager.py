@@ -41,56 +41,59 @@ class ProcessManager:
             start_new_session=True
         )
 
-    def create_process(self, config_data: Dict) -> Dict:
-        """Create a new PM2 process"""
-        try:
-            name = config_data["name"]
-            self.logger.info(f"Creating new process: {name}")
-            
-            # Setup paths
-            base_path = Path("/home/pm2")
-            config_dir = base_path / "pm2-configs"
-            process_dir = base_path / "pm2-processes" / name
-            logs_dir = process_dir / "logs"
-            current_dir = process_dir / "current"
-            venv_path = process_dir / "venv"
+def create_process(self, config_data: Dict) -> Dict:
+    """Create a new PM2 process"""
+    try:
+        name = config_data["name"]
+        self.logger.info(f"Creating new process: {name}")
+        
+        # Setup paths
+        base_path = Path("/home/pm2")
+        config_dir = base_path / "pm2-configs"
+        process_dir = base_path / "pm2-processes" / name
+        logs_dir = process_dir / "logs"
+        current_dir = process_dir / "current"
+        venv_path = process_dir / "venv"
 
-            # Create directories
-            for directory in [config_dir, process_dir, logs_dir, current_dir]:
-                directory.mkdir(parents=True, exist_ok=True)
+        # Create directories
+        for directory in [config_dir, process_dir, logs_dir, current_dir]:
+            directory.mkdir(parents=True, exist_ok=True)
 
-            # Clone repository
-            repo_url = config_data['repository']['url']
-            branch = config_data['repository'].get('branch', 'main')
-            
-            self.logger.debug(f"Cloning repository {repo_url} branch {branch}")
-            clone_result = os.system(f"git clone -b {branch} {repo_url} {current_dir}")
-            if clone_result != 0:
-                raise PM2CommandError("Git clone failed")
+        # Clone repository
+        repo_url = config_data['repository']['url']
+        branch = config_data['repository'].get('branch', 'main')
+        
+        self.logger.debug(f"Cloning repository {repo_url} branch {branch}")
+        clone_result = os.system(f"git clone -b {branch} {repo_url} {current_dir}")
+        if clone_result != 0:
+            raise PM2CommandError("Git clone failed")
 
-            # Setup virtual environment
-            self.logger.debug(f"Creating virtual environment at {venv_path}")
-            venv_result = os.system(f"python3 -m venv {venv_path}")
-            if venv_result != 0:
-                raise PM2CommandError("Virtual environment creation failed")
+        # Setup virtual environment
+        self.logger.debug(f"Creating virtual environment at {venv_path}")
+        venv_result = os.system(f"python3 -m venv {venv_path}")
+        if venv_result != 0:
+            raise PM2CommandError("Virtual environment creation failed")
 
-            # Install dependencies if requirements.txt exists
-            requirements_file = current_dir / "requirements.txt"
-            if requirements_file.exists():
-                self.logger.debug("Installing dependencies")
-                pip_result = os.system(f"{venv_path}/bin/pip install -r {requirements_file}")
-                if pip_result != 0:
-                    raise PM2CommandError("Dependencies installation failed")
+        # Install dependencies if requirements.txt exists
+        requirements_file = current_dir / "requirements.txt"
+        if requirements_file.exists():
+            self.logger.debug("Installing dependencies")
+            pip_result = os.system(f"{venv_path}/bin/pip install -r {requirements_file}")
+            if pip_result != 0:
+                raise PM2CommandError("Dependencies installation failed")
 
-            # Generate PM2 config
-            script = config_data.get('script', 'app.py')
-            config_file = config_dir / f"{name}.config.js"
-            
-            config_content = f'''// Process Configuration
+        # Generate PM2 config
+        script = config_data.get('script', 'app.py')
+        config_file = config_dir / f"{name}.config.js"
+        
+        # Handle cron pattern correctly - either provide a valid pattern or omit entirely
+        cron_pattern = config_data.get('cron')
+        cron_config = f'cron_restart: "{cron_pattern}",' if cron_pattern else ''
+        
+        config_content = f'''// Process Configuration
 const processName = '{name}';
 const repoUrl = '{repo_url}';
 const processScript = `{script}`;
-const processCron = `{config_data.get('cron', '')}`;
 const autoRestart = {str(config_data.get('auto_restart', False)).lower()};
 const envConfig = {json.dumps(config_data.get('env_vars', {
     'PORT': '5001',
@@ -120,7 +123,7 @@ module.exports = {{
         interpreter: `${{venvPath}}/bin/python3`,
         env: envConfig,
         autorestart: autoRestart,
-        cron_restart: processCron,
+        {cron_config}
         max_restarts: 3,
         watch: false,
         ignore_watch: [
@@ -161,29 +164,44 @@ module.exports = {{
     }}
 }};'''
 
-            config_file.write_text(config_content)
+        config_file.write_text(config_content)
 
-            # Start the process in a detached way
-            self.logger.debug(f"Starting process with PM2: {name}")
-            try:
-                self._start_process_detached(config_file, process_dir)
+        # Start the process in a detached way
+        self.logger.debug(f"Starting process with PM2: {name}")
+        try:
+            start_script = process_dir / "start.sh"
+            start_script_content = f'''#!/bin/bash
+{self.config.PM2_BIN} start {config_file}
+{self.config.PM2_BIN} save --force
+'''
+            start_script.write_text(start_script_content)
+            os.chmod(start_script, 0o755)
 
-                self.logger.info(f"Process {name} created successfully")
-                return {
-                    "success": True,
-                    "message": f"Process {name} created successfully",
-                    "process_name": name,
-                    "config_file": str(config_file)
-                }
+            # Execute the start script in the background
+            subprocess.Popen(
+                ["/bin/bash", str(start_script)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True
+            )
 
-            except Exception as e:
-                raise PM2CommandError(f"PM2 start failed: {str(e)}")
+            self.logger.info(f"Process {name} created successfully")
+            return {
+                "success": True,
+                "message": f"Process {name} created successfully",
+                "process_name": name,
+                "config_file": str(config_file)
+            }
 
         except Exception as e:
-            self.logger.error(f"Process creation failed: {str(e)}", exc_info=True)
-            self._cleanup_failed_process(name, process_dir)
-            raise PM2CommandError(f"Process creation failed: {str(e)}")
-        
+            raise PM2CommandError(f"PM2 start failed: {str(e)}")
+
+    except Exception as e:
+        self.logger.error(f"Process creation failed: {str(e)}", exc_info=True)
+        self._cleanup_failed_process(name, process_dir)
+        raise PM2CommandError(f"Process creation failed: {str(e)}")
+    
+       
         
     def _cleanup_failed_process(self, name: str, process_dir: Path):
         """Clean up resources after failed process creation"""
