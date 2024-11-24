@@ -6,3 +6,4 @@ Werkzeug==3.0.1
 attrs==23.1.0
 jsonschema==4.20.0
 gunicorn==21.2.0
+pm2
