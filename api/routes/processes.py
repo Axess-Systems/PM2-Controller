@@ -8,111 +8,109 @@ from core.exceptions import ProcessNotFoundError, ProcessAlreadyExistsError, PM2
 def create_process_routes(namespace, services=None):
     """Create process management routes"""
     
-    @namespace.route('/')
-    class ProcessList(Resource):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            self.pm2_service = services['pm2_service']
-            self.process_manager = services['process_manager']
-            self.logger = services['logger']
-            self.config = services['config']
+@namespace.route('/')
+class ProcessList(Resource):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.pm2_service = services['pm2_service']
+        self.process_manager = services['process_manager']
+        self.logger = services['logger']
+        self.config = services['config']
 
-        @namespace.doc(
-            responses={
-                200: 'Success',
-                
-                500: 'Internal server error'
-            }
-        )
-        def get(self):
-            """Get list of all PM2 processes"""
-            try:
-                # Fetch processes from PM2 service
-                processes = self.pm2_service.list_processes()
+    @namespace.doc(
+        responses={
+            200: 'Success',
+            500: 'Internal server error'
+        }
+    )
+    def get(self):
+        """Get list of all PM2 processes"""
+        try:
+            # Fetch processes from PM2 service
+            processes = self.pm2_service.list_processes()
 
-                # Enhance process details with configuration file paths
-                for process in processes:
-                    try:
-                        # Paths for PM2 and Python configuration files
-                        pm2_config = Path(f"{self.config.PM2_CONFIG_DIR}/{process['name']}.config.js")
-                        python_config = Path(f"{self.config.PM2_CONFIG_DIR}/{process['name']}.ini")
+            # Enhance process details with configuration file paths
+            for process in processes:
+                try:
+                    # Paths for PM2 and Python configuration files
+                    pm2_config = Path(f"{self.config.PM2_CONFIG_DIR}/{process['name']}.config.js")
+                    python_config = Path(f"{self.config.PM2_CONFIG_DIR}/{process['name']}.ini")
 
-                        # Add config file paths if they exist
-                        process['config_files'] = {
-                            'pm2_config': str(pm2_config) if pm2_config.exists() else None,
-                            'python_config': str(python_config) if python_config.exists() else None
-                        }
-                    except Exception as e:
-                        self.logger.warning(f"Error getting config paths for process {process.get('name', 'unknown')}: {str(e)}")
-
-                # Return the list of processes
-                return {'success': True, 'processes': processes}, 200
-
-            except Exception as e:
-                # Log the error
-                self.logger.error(f"Error getting process list: {str(e)}", exc_info=True)
-
-                # Return an error response
-                return {
-                    'error': 'Failed to retrieve PM2 processes',
-                    'error_type': type(e).__name__,
-                    'timestamp': datetime.now().isoformat(),
-                    'details': {
-                        'command': 'pm2 jlist',
-                        'error_details': str(e)
+                    # Add config file paths if they exist
+                    process['config_files'] = {
+                        'pm2_config': str(pm2_config) if pm2_config.exists() else None,
+                        'python_config': str(python_config) if python_config.exists() else None
                     }
-                }, 500
+                except Exception as e:
+                    self.logger.warning(f"Error getting config paths for process {process.get('name', 'unknown')}: {str(e)}")
 
-        @namespace.doc(
-            responses={
-                201: 'Process created',
-                400: 'Invalid input',
-                409: 'Process already exists',
-                500: 'Internal server error'
-            }
-        )
-        @namespace.expect(namespace.models['new_process'])
-        def post(self):
-            """Create a new PM2 process"""
-            try:
-                # Create the process using the payload from the request
-                result = self.process_manager.create_process(namespace.payload)
+            # Return the list of processes
+            return {'success': True, 'processes': processes}, 200
 
-                # Return success response
-                return {'success': True, 'details': result}, 201
+        except Exception as e:
+            # Log the error
+            self.logger.error(f"Error getting process list: {str(e)}", exc_info=True)
 
-            except ProcessAlreadyExistsError as e:
-                # Handle case where the process already exists
-                self.logger.warning(f"Process already exists: {namespace.payload.get('name')}")
-                return {
-                    'error': str(e),
-                    'error_type': 'ProcessAlreadyExistsError',
-                    'timestamp': datetime.now().isoformat(),
-                    'details': {'process_name': namespace.payload.get('name')}
-                }, 409
+            # Return an error response
+            return {
+                'error': 'Failed to retrieve PM2 processes',
+                'error_type': type(e).__name__,
+                'timestamp': datetime.now().isoformat(),
+                'details': {
+                    'command': 'pm2 jlist',
+                    'error_details': str(e)
+                }
+            }, 500
 
-            except KeyError as e:
-                # Handle missing required fields in the payload
-                self.logger.error(f"Invalid input data: Missing key {str(e)}", exc_info=True)
-                return {
-                    'error': f"Missing required key: {str(e)}",
-                    'error_type': 'KeyError',
-                    'timestamp': datetime.now().isoformat(),
-                    'details': None
-                }, 400
+    @namespace.doc(
+        responses={
+            201: 'Process created',
+            400: 'Invalid input',
+            409: 'Process already exists',
+            500: 'Internal server error'
+        }
+    )
+    @namespace.expect(namespace.models['new_process'])
+    def post(self):
+        """Create a new PM2 process"""
+        try:
+            # Create the process using the payload from the request
+            result = self.process_manager.create_process(namespace.payload)
 
-            except Exception as e:
-                # Log unexpected errors
-                self.logger.error(f"Error creating process: {str(e)}", exc_info=True)
+            # Return success response
+            return {'success': True, 'details': result}, 201
 
-                # Return a generic error response
-                return {
-                    'error': 'An unexpected error occurred while creating the process',
-                    'error_type': type(e).__name__,
-                    'timestamp': datetime.now().isoformat(),
-                    'details': None
-                }, 500
-            
+        except ProcessAlreadyExistsError as e:
+            # Handle case where the process already exists
+            self.logger.warning(f"Process already exists: {namespace.payload.get('name')}")
+            return {
+                'error': str(e),
+                'error_type': 'ProcessAlreadyExistsError',
+                'timestamp': datetime.now().isoformat(),
+                'details': {'process_name': namespace.payload.get('name')}
+            }, 409
+
+        except KeyError as e:
+            # Handle missing required fields in the payload
+            self.logger.error(f"Invalid input data: Missing key {str(e)}", exc_info=True)
+            return {
+                'error': f"Missing required key: {str(e)}",
+                'error_type': 'KeyError',
+                'timestamp': datetime.now().isoformat(),
+                'details': None
+            }, 400
+
+        except Exception as e:
+            # Log unexpected errors
+            self.logger.error(f"Error creating process: {str(e)}", exc_info=True)
+
+            # Return a generic error response
+            return {
+                'error': 'An unexpected error occurred while creating the process',
+                'error_type': type(e).__name__,
+                'timestamp': datetime.now().isoformat(),
+                'details': None
+            }, 500
             
     @namespace.route('/<string:process_name>')
     class Process(Resource):
