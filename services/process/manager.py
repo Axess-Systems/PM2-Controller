@@ -28,10 +28,10 @@ class ProcessManager:
         """Create a new PM2 process."""
         try:
             # Validate required fields in config_data
-            name = config_data.get("name")
+            name = config_data["name"]
             if not name:
                 raise ValueError("Process name is required")
-            repo_url = config_data.get('repository', {}).get('url')
+            repo_url = config_data['repository']['url']
             if not repo_url:
                 raise ValueError("Repository URL is required")
 
@@ -46,21 +46,46 @@ class ProcessManager:
             venv_path = process_dir / "venv"
 
             # Create directories
-            for directory in [config_dir, process_dir, logs_dir, current_dir]:
+            for directory in [config_dir, process_dir, logs_dir]:
                 directory.mkdir(parents=True, exist_ok=True)
 
             # Clone repository
             branch = config_data['repository'].get('branch', 'main')
             self.logger.debug(f"Cloning repository {repo_url}, branch {branch}")
-            try:
-                subprocess.run(
-                    ["git", "clone", "-b", branch, repo_url, str(current_dir)],
-                    check=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                )
-            except subprocess.CalledProcessError as e:
-                raise PM2CommandError(f"Git clone failed: {e.stderr.decode().strip()}")
+
+            if current_dir.exists():
+                self.logger.warning(f"Target directory {current_dir} already exists.")
+
+                # Check if it's a valid Git repository
+                git_dir = current_dir / ".git"
+                if git_dir.exists():
+                    self.logger.info(f"Directory {current_dir} already contains a Git repository. Pulling updates.")
+                    try:
+                        # Pull latest changes
+                        subprocess.run(
+                            ["git", "pull", "origin", branch],
+                            cwd=current_dir,
+                            check=True,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                        )
+                    except subprocess.CalledProcessError as e:
+                        raise PM2CommandError(f"Git pull failed: {e.stderr.decode().strip()}")
+                else:
+                    self.logger.warning(f"Directory {current_dir} exists but is not a Git repository. Cleaning up.")
+                    shutil.rmtree(current_dir)
+
+            # Clone repository if the directory doesn't exist or was cleaned up
+            if not current_dir.exists():
+                try:
+                    subprocess.run(
+                        ["git", "clone", "-b", branch, repo_url, str(current_dir)],
+                        check=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                    )
+                except subprocess.CalledProcessError as e:
+                    raise PM2CommandError(f"Git clone failed: {e.stderr.decode().strip()}")
 
             # Setup virtual environment
             self.logger.debug(f"Creating virtual environment at {venv_path}")
@@ -171,7 +196,9 @@ class ProcessManager:
             self.logger.error(f"Process creation failed: {str(e)}", exc_info=True)
             self._cleanup_failed_process(name, process_dir)
             raise PM2CommandError(f"Process creation failed: {str(e)}")
-
+        
+        
+    
 
     def _cleanup_failed_process(self, name: str, process_dir: Path):
         """Clean up resources after failed process creation"""
