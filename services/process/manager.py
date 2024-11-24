@@ -19,7 +19,6 @@ from typing import Dict
 from datetime import datetime
 from core.config import Config
 from core.exceptions import ProcessAlreadyExistsError, PM2CommandError
-from services.pm2.service import PM2Service
 from core.config import Config
 from core.exceptions import (
     PM2CommandError,
@@ -27,6 +26,7 @@ from core.exceptions import (
     ProcessAlreadyExistsError,
 )
 from services.pm2.service import PM2Service
+from services.pm2.commands import PM2Commands
 
 class ProcessManager:
     def __init__(self, config: Config, logger: logging.Logger):
