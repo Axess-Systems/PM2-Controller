@@ -7,3 +7,4 @@ attrs==23.1.0
 jsonschema==4.20.0
 gunicorn==21.2.0
 pm2
+requests
