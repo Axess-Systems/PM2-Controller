@@ -30,16 +30,18 @@ from services.pm2.service import PM2Service
 
 class ProcessManager:
     def __init__(self, config: Config, logger: logging.Logger):
-        """Initialize ProcessManager
-        
-        Args:
-            config: Application configuration instance
-            logger: Logger instance for process management operations
-        """
+        """Initialize ProcessManager with PM2"""
         self.config = config
         self.logger = logger
         self.pm2_service = PM2Service(config, logger)
-
+        
+        # Initialize PM2 instance
+        try:
+            self._pm2 = PM2()
+            self.logger.info("PM2 API initialized successfully")
+        except Exception as e:
+            self.logger.error(f"Failed to initialize PM2 API: {str(e)}")
+            raise PM2CommandError(f"PM2 API initialization failed: {str(e)}")
 
 
 
@@ -58,8 +60,8 @@ class ProcessManager:
             venv_path = process_dir / "venv"
             
             # Check if process already exists
-            config_path = config_dir / f"{name}.config.js"
-            if config_path.exists():
+            existing_processes = self._pm2.list()
+            if any(p.get('name') == name for p in existing_processes):
                 raise ProcessAlreadyExistsError(f"Process {name} already exists")
 
             # Create directories
@@ -89,18 +91,16 @@ class ProcessManager:
                 if pip_result != 0:
                     raise PM2CommandError("Dependencies installation failed")
 
-            # Generate PM2 config
-            self.logger.debug("Generating PM2 configuration")
+            # Start the process using PM2's Python API
             script = config_data.get('script', 'app.py')
-            
-            # Start the process using PM2's Python API directly
             self.logger.debug(f"Starting process with PM2: {name}")
+            
             try:
-                self.pm2.start(
-                    str(venv_path / "bin" / "python"),  # Python interpreter path
+                self._pm2.start(
+                    str(venv_path / "bin" / "python"),
                     name=name,
                     cwd=str(current_dir),
-                    extra_args=[str(current_dir / script)],  # Script path as argument
+                    extra_args=[str(current_dir / script)],
                     env=config_data.get('env_vars', {}),
                     autorestart=config_data.get('auto_restart', True),
                     max_memory_restart='1G',
@@ -124,16 +124,16 @@ class ProcessManager:
             raise
         except Exception as e:
             self.logger.error(f"Process creation failed: {str(e)}", exc_info=True)
-            # Cleanup on failure
             self._cleanup_failed_process(name, process_dir)
             raise PM2CommandError(f"Process creation failed: {str(e)}")
+
 
     def _cleanup_failed_process(self, name: str, process_dir: Path):
         """Clean up resources after failed process creation"""
         try:
             # Try to remove from PM2
             try:
-                self.pm2.delete(name=name)
+                self._pm2.delete(name=name)
             except:
                 pass
 
@@ -143,6 +143,33 @@ class ProcessManager:
 
         except Exception as e:
             self.logger.error(f"Cleanup failed: {str(e)}")
+
+    def delete_process(self, name: str) -> Dict:
+        """Delete a process"""
+        try:
+            self.logger.info(f"Deleting process: {name}")
+            
+            process_dir = Path(f"/home/pm2/pm2-processes/{name}")
+
+            # Delete from PM2
+            try:
+                self._pm2.delete(name=name)
+            except Exception as e:
+                self.logger.warning(f"PM2 deletion warning: {str(e)}")
+            
+            # Remove process directory
+            if process_dir.exists():
+                shutil.rmtree(process_dir)
+
+            return {
+                "success": True,
+                "message": f"Process {name} deleted successfully"
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to delete process {name}: {str(e)}")
+            raise PM2CommandError(f"Error deleting process {name}: {str(e)}")
+
 
     def delete_process(self, name: str) -> Dict:
         """Delete a process"""
