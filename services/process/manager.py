@@ -8,6 +8,8 @@ import json
 import tempfile
 import subprocess
 import shutil
+import pm2.api
+
 import logging
 from pathlib import Path
 from typing import Dict
