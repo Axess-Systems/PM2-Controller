@@ -25,8 +25,7 @@ from core.exceptions import (
     ProcessNotFoundError,
     ProcessAlreadyExistsError,
 )
-from services.pm2.service import PM2Service
-from services.pm2.commands import PM2Commands
+from services.pm2 import PM2Service, PM2Commands 
 
 class ProcessManager:
     def __init__(self, config: Config, logger: logging.Logger):
@@ -88,7 +87,7 @@ class ProcessManager:
         args: ["{current_dir}/{script}"],
         cwd: "{current_dir}",
         env: {json.dumps(config_data.get('env_vars', {}))},
-        autorestart: {str(config_data.get('auto_restart', True)).lower()},
+        autorestart: {str(config_data.get('auto_restart', False)).lower()},
         watch: false,
         ignore_watch: [
             "venv",
@@ -286,7 +285,7 @@ class ProcessManager:
                     raise PM2CommandError(f"Dependencies installation failed: {pip_install.stderr}")
 
             # Start/restart the process with config
-            start_cmd = f"pm2 start {config_path} --force"
+            start_cmd = f"pm2 start {config_path}"
             start_result = subprocess.run(
                 start_cmd,
                 shell=True,
