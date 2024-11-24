@@ -1,16 +1,11 @@
-# services/process/manager.py
-
-
-# services/process/manager.py
-
 import json
 import os
 import shutil
 import logging
+import requests
 from pathlib import Path
 from typing import Dict
 from datetime import datetime
-from multiprocessing import Process
 
 from core.config import Config
 from core.exceptions import (
@@ -27,6 +22,18 @@ class ProcessManager:
         self.logger = logger
         self.pm2_service = PM2Service(config, logger)
         self.pm2_commands = PM2Commands(config, logger)
+        
+    def _start_pm2_process_http(self, config_file: Path) -> bool:
+        """Start PM2 process using HTTP API"""
+        try:
+            # PM2 Web API typically runs on port 9615
+            response = requests.post('http://localhost:9615/api/processes/start', json={
+                'filename': str(config_file)
+            })
+            return response.status_code == 200
+        except Exception as e:
+            self.logger.error(f"HTTP API start failed: {str(e)}")
+            return False
 
     def create_process(self, config_data: Dict) -> Dict:
         """Create a new PM2 process"""
@@ -99,48 +106,33 @@ class ProcessManager:
 
             config_file.write_text(config_content)
 
-            # Start the process using PM2 command in a separate process
-            self.logger.debug(f"Starting process with PM2: {name}")
-            try:
-                # Define the PM2 start function
-                def _start_pm2_process():
-                    try:
-                        start_cmd = f"{self.config.PM2_BIN} start {config_file}"
-                        self.logger.debug(f"Running PM2 start command: {start_cmd}")
-                        start_result = os.system(start_cmd)
-                        if start_result != 0:
-                            self.logger.error("PM2 start command failed")
-                            return
-                        
-                        save_cmd = f"{self.config.PM2_BIN} save --force"
-                        self.logger.debug(f"Running PM2 save command: {save_cmd}")
-                        save_result = os.system(save_cmd)
-                        if save_result != 0:
-                            self.logger.error("PM2 save command failed")
-                    except Exception as e:
-                        self.logger.error(f"Failed to start PM2 process: {str(e)}")
+            # Try to start the process using HTTP API first
+            self.logger.debug(f"Starting process with PM2 HTTP API: {name}")
+            if not self._start_pm2_process_http(config_file):
+                # Fall back to command-line with special handling
+                self.logger.debug("HTTP API failed, using fallback method")
+                with open('/tmp/pm2_start.sh', 'w') as f:
+                    f.write(f'''#!/bin/bash
+{self.config.PM2_BIN} start {config_file}
+{self.config.PM2_BIN} save --force
+''')
+                os.chmod('/tmp/pm2_start.sh', 0o755)
+                os.system('nohup /tmp/pm2_start.sh >/dev/null 2>&1 &')
 
-                # Create and start the process
-                pm2_process = Process(target=_start_pm2_process)
-                pm2_process.start()
-                pm2_process.join(timeout=5)  # Wait for 5 seconds
-
-                self.logger.info(f"Process {name} created successfully")
-                return {
-                    "success": True,
-                    "message": f"Process {name} created successfully",
-                    "process_name": name,
-                    "config_file": str(config_file)
-                }
-
-            except Exception as e:
-                raise PM2CommandError(f"PM2 start failed: {str(e)}")
+            self.logger.info(f"Process {name} created successfully")
+            return {
+                "success": True,
+                "message": f"Process {name} created successfully",
+                "process_name": name,
+                "config_file": str(config_file)
+            }
 
         except Exception as e:
             self.logger.error(f"Process creation failed: {str(e)}", exc_info=True)
             self._cleanup_failed_process(name, process_dir)
             raise PM2CommandError(f"Process creation failed: {str(e)}")
-
+        
+        
     def _cleanup_failed_process(self, name: str, process_dir: Path):
         """Clean up resources after failed process creation"""
         try:
