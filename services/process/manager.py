@@ -1,15 +1,18 @@
 # services/process/manager.py
-from multiprocessing import Queue
-from typing import Dict, Optional
-from pathlib import Path
+
+
+# services/process/manager.py
+
 import json
-import shutil
+import tempfile
 import subprocess
 import logging
-import re
+from pathlib import Path
+from typing import Dict
 from datetime import datetime
-
-from queue import Empty
+from core.config import Config
+from core.exceptions import ProcessAlreadyExistsError, PM2CommandError
+from services.pm2.service import PM2Service
 from core.config import Config
 from core.exceptions import (
     PM2CommandError,
@@ -29,6 +32,9 @@ class ProcessManager:
         self.config = config
         self.logger = logger
         self.pm2_service = PM2Service(config, logger)
+
+
+
 
     def create_process(self, config_data: Dict, timeout: int = 600) -> Dict:
         """Create a new PM2 process using the worker script
@@ -57,6 +63,7 @@ class ProcessManager:
             with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as temp_file:
                 json.dump(config_data, temp_file, indent=2)
                 temp_path = temp_file.name
+                temp_file.flush()  # Ensure all data is written
             
             try:
                 # Find worker script relative to current file
@@ -103,8 +110,7 @@ class ProcessManager:
             raise PM2CommandError(error_msg)
         except Exception as e:
             self.logger.error(f"Process creation failed: {str(e)}", exc_info=True)
-            raise PM2CommandError(f"Process creation failed: {str(e)}")
-        
+            raise PM2CommandError(f"Process creation failed: {str(e)}")                 
 
     def delete_process(self, name: str) -> Dict:
         """Delete a process and its associated files
