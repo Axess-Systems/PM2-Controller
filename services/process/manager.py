@@ -3,9 +3,11 @@
 
 # services/process/manager.py
 
+import os
 import json
 import tempfile
 import subprocess
+import shutil
 import logging
 from pathlib import Path
 from typing import Dict

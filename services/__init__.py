@@ -1,5 +1,4 @@
-# services/__init__.py
-from .pm2.service import PM2Service
-from .process.manager import ProcessManager
+# services/process/__init__.py
+from .manager import ProcessManager
 
-__all__ = ['PM2Service', 'ProcessManager']
+__all__ = ['ProcessManager']
