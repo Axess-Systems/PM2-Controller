@@ -27,7 +27,7 @@ class ProcessManager:
     def create_process(self, config_data: Dict) -> Dict:
         """Create a new PM2 process"""
         try:
-            name = config_data["name"]  # Using 'name' from the model
+            name = config_data["name"]
             self.logger.info(f"Creating new process: {name}")
             
             # Setup paths
@@ -43,7 +43,7 @@ class ProcessManager:
                 directory.mkdir(parents=True, exist_ok=True)
 
             # Clone repository
-            repo_url = config_data['repository']['url']  # Using nested repository structure
+            repo_url = config_data['repository']['url']
             branch = config_data['repository'].get('branch', 'main')
             
             self.logger.debug(f"Cloning repository {repo_url} branch {branch}")
@@ -68,11 +68,14 @@ class ProcessManager:
             # Generate PM2 config
             config_file = config_dir / f"{name}.config.js"
             
+            # Handle cron pattern - only include if it's a valid pattern
+            cron_value = config_data.get('cron')
+            cron_config = f'cron_restart: "{cron_value}",' if cron_value and cron_value.strip() and cron_value.lower() != 'null' else ''
+            
             config_content = f'''// Process Configuration
     const processName = '{name}';
     const repoUrl = '{repo_url}';
     const processScript = `{config_data.get('script', 'app.py')}`;
-    const processCron = `{config_data.get('cron', ' ')}`;
     const autoRestart = {str(config_data.get('auto_restart', False)).lower()};
     const max_restarts = `{config_data.get('max_restarts', '3')}`;
     const watch = `{config_data.get('watch', 'False')}`;
@@ -105,7 +108,7 @@ class ProcessManager:
             interpreter: `${{venvPath}}/bin/python3`,
             env: envConfig,
             autorestart: autoRestart,
-            cron_restart: processCron,
+            {cron_config}
             max_restarts: max_restarts,
             watch: watch,
             ignore_watch: [
@@ -183,7 +186,6 @@ class ProcessManager:
             self._cleanup_failed_process(name, process_dir)
             raise PM2CommandError(f"Process creation failed: {str(e)}")
 
-
     def _cleanup_failed_process(self, name: str, process_dir: Path):
         """Clean up resources after failed process creation"""
         try:
@@ -199,25 +201,9 @@ class ProcessManager:
                 shutil.rmtree(process_dir)
 
         except Exception as e:
-            self.logger.error(f"Cleanup failed: {str(e)}")    
-    
+            self.logger.error(f"Cleanup failed: {str(e)}")
 
-    def _cleanup_failed_process(self, name: str, process_dir: Path):
-        """Clean up resources after failed process creation"""
-        try:
-            # Try to remove from PM2
-            try:
-                self.pm2_commands.execute(f"delete {name}", retry=False)
-                self.pm2_commands.execute("save", retry=False)
-            except:
-                pass
 
-            # Remove process directory
-            if process_dir.exists():
-                shutil.rmtree(process_dir)
-
-        except Exception as e:
-            self.logger.error(f"Cleanup failed: {str(e)}") 
             
     def delete_process(self, name: str) -> Dict:
         """Delete a process"""
