@@ -109,7 +109,7 @@ class ProcessManager:
             # Start the process using PM2 command
             self.logger.debug(f"Starting process with PM2: {name}")
             try:
-                self.pm2_commands.execute(f"start {config_file}")
+                # self.pm2_commands.execute(f"start {config_file}")
 
                 # Save PM2 process list
                 self.pm2_commands.execute("save")
