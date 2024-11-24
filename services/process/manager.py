@@ -27,7 +27,7 @@ class ProcessManager:
     def create_process(self, config_data: Dict) -> Dict:
         """Create a new PM2 process"""
         try:
-            name = config_data["processName"]  # Updated to match new model
+            name = config_data["name"]  # Using 'name' from the model
             self.logger.info(f"Creating new process: {name}")
             
             # Setup paths
@@ -43,8 +43,8 @@ class ProcessManager:
                 directory.mkdir(parents=True, exist_ok=True)
 
             # Clone repository
-            repo_url = config_data['repoUrl']  # Updated to match new model
-            branch = 'main'  # Default to main branch
+            repo_url = config_data['repository']['url']  # Using nested repository structure
+            branch = config_data['repository'].get('branch', 'main')
             
             self.logger.debug(f"Cloning repository {repo_url} branch {branch}")
             clone_result = os.system(f"git clone -b {branch} {repo_url} {current_dir}")
@@ -71,13 +71,13 @@ class ProcessManager:
             config_content = f'''// Process Configuration
     const processName = '{name}';
     const repoUrl = '{repo_url}';
-    const processScript = `{config_data.get('processScript', 'app.py')}`;
-    const processCron = `{config_data.get('processCron', ' ')}`;
-    const autoRestart = {str(config_data.get('autoRestart', False)).lower()};
+    const processScript = `{config_data.get('script', 'app.py')}`;
+    const processCron = `{config_data.get('cron', ' ')}`;
+    const autoRestart = {str(config_data.get('auto_restart', False)).lower()};
     const max_restarts = `{config_data.get('max_restarts', '3')}`;
     const watch = `{config_data.get('watch', 'False')}`;
     const max_memory_restart = `{config_data.get('max_memory_restart', '1G')}`;
-    const envConfig = {json.dumps(config_data.get('envConfig', {
+    const envConfig = {json.dumps(config_data.get('env_vars', {
         'PORT': '5001',
         'HOST': '0.0.0.0',
         'DEBUG': 'False',
@@ -182,6 +182,7 @@ class ProcessManager:
             self.logger.error(f"Process creation failed: {str(e)}", exc_info=True)
             self._cleanup_failed_process(name, process_dir)
             raise PM2CommandError(f"Process creation failed: {str(e)}")
+
 
     def _cleanup_failed_process(self, name: str, process_dir: Path):
         """Clean up resources after failed process creation"""
