@@ -41,34 +41,13 @@ def ensure_venv():
 
         os.execv(str(venv_python), [str(venv_python), __file__] + sys.argv[1:])
 
-# Check venv before importing any other modules
 ensure_venv()
 
-class MonitoringThread(threading.Thread):
-    def __init__(self, services, interval=60):
-        super().__init__()
-        self.services = services
-        self.interval = interval
-        self.stop_flag = threading.Event()
-        
-    def run(self):
-        while not self.stop_flag.is_set():
-            try:
-                self.services['process_manager'].log_status()
-                self.services['host_monitor'].log_metrics()
-            except Exception as e:
-                self.services['logger'].error(f"Monitoring error: {str(e)}")
-            time.sleep(self.interval)
-            
-    def stop(self):
-        self.stop_flag.set()
-        
 def create_app():
     """Create and configure the Flask application"""
     app = Flask(__name__)
     app.wsgi_app = ProxyFix(app.wsgi_app)
     
-    # Initialize API
     api = Api(app, 
         version='1.0', 
         title='PM2 Controller API',
@@ -77,7 +56,6 @@ def create_app():
         prefix='/api'
     )
     
-    # Configure CORS
     CORS(app, resources={
         r"/*": {
             "origins": "*",
@@ -104,33 +82,18 @@ def create_app():
         
         return response
     
-    # Initialize core services
     config = Config()
     logger = setup_logging(config)
     
-    # Initialize monitoring thread
-    monitoring_thread = MonitoringThread(interval=60)
-    monitoring_thread.daemon = True
-    
-    # Initialize services
     services = {
         'pm2_service': PM2Service(config, logger),
         'process_manager': ProcessManager(config, logger),
         'log_manager': LogManager(config, logger),
         'host_monitor': HostMonitor(config, logger),
         'logger': logger,
-        'config': config,
-        'monitoring_thread': monitoring_thread
+        'config': config
     }
     
-    # Start monitoring
-    monitoring_thread.services = services
-    monitoring_thread.start()
-    
-    # Register cleanup
-    atexit.register(monitoring_thread.stop)
-    
-    # Create namespaces
     namespaces = {
         'health': api.namespace('health', description='Health checks'),
         'processes': api.namespace('processes', description='PM2 process operations'),
@@ -138,7 +101,6 @@ def create_app():
         'host': api.namespace('host', description='Host system monitoring')
     }
     
-    # Register models
     models = {
         **create_api_models(api),
         'error': create_error_models(api),
@@ -148,36 +110,34 @@ def create_app():
     for name, model in models.items():
         api.models[name] = model
     
-    # Share models with namespaces
     for ns in namespaces.values():
         ns.models = api.models
     
-    # Register routes
     create_process_routes(namespaces['processes'], services)
     create_health_routes(namespaces['health'], services)
     create_log_routes(namespaces['logs'], services)
     create_host_routes(namespaces['host'], services)
-    
+
+    # Initialize scheduler
+    scheduler = MonitoringScheduler(config, services, logger)
+    scheduler.init_scheduler()
+    app.scheduler = scheduler
+
     @app.teardown_appcontext
     def cleanup(exception=None):
-        monitoring_thread.stop()
-    
+        if hasattr(app, 'scheduler'):
+            app.scheduler.shutdown()
+
     return app
 
-
-# This is our application for gunicorn
 application = create_app()
 
 if __name__ == '__main__':
-    try:
-        config = Config()
-        logger = setup_logging(config)
-        logger.info("Starting PM2 Controller API with Host Monitoring")
-        application.run(
-            host=config.HOST,
-            port=config.PORT,
-            debug=config.DEBUG
-        )
-    except Exception as e:
-        logger.error(f"Service startup failed: {str(e)}")
-        raise
+    config = Config()
+    logger = setup_logging(config)
+    logger.info("Starting PM2 Controller API")
+    application.run(
+        host=config.HOST,
+        port=config.PORT,
+        debug=config.DEBUG
+    )
