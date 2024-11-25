@@ -48,6 +48,14 @@ def create_app():
     app = Flask(__name__)
     app.wsgi_app = ProxyFix(app.wsgi_app)
     
+    config = Config()
+    logger = setup_logging(config)
+    
+    # Setup database
+    from core.database import setup_database
+    setup_database(config)
+    
+    
     api = Api(app, 
         version='1.0', 
         title='PM2 Controller API',
