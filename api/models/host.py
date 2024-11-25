@@ -1,74 +1,84 @@
-# api/models/monitoring.py
+# api/models/host.py
 
 from flask_restx import fields
 
-def create_monitoring_models(api):
-    """Create models for process monitoring endpoints with heatmap support"""
+def create_host_models(api):
+    """Create models for host system monitoring"""
     
-    # Base monitoring models (existing)
-    monit_model = api.model('ProcessMonitoring', {
-        'memory': fields.Integer(description='Memory usage in bytes'),
-        'cpu': fields.Float(description='CPU usage percentage'),
-        'timestamp': fields.DateTime(description='Monitoring timestamp')
+    # Disk usage model
+    disk_info_model = api.model('DiskInfo', {
+        'device': fields.String(description='Device name/mount point'),
+        'total': fields.Float(description='Total space in GB'),
+        'used': fields.Float(description='Used space in GB'),
+        'free': fields.Float(description='Free space in GB'),
+        'percent_used': fields.Float(description='Percentage used'),
+        'mount_point': fields.String(description='Mount point')
     })
 
-    error_model = api.model('ProcessError', {
-        'timestamp': fields.DateTime(description='Error timestamp'),
-        'type': fields.String(description='Error type', enum=['error', 'warning']),
-        'details': fields.Raw(description='Error details')
+    # CPU info model
+    cpu_info_model = api.model('CPUInfo', {
+        'count': fields.Integer(description='Number of CPU cores'),
+        'percent': fields.Float(description='Overall CPU usage percentage'),
+        'per_cpu': fields.List(fields.Float, description='Per-CPU usage percentages'),
+        'load_avg': fields.List(fields.Float, description='Load averages [1m, 5m, 15m]')
     })
 
-    # Heatmap data point model
-    heatmap_point_model = api.model('HeatmapPoint', {
-        'timestamp': fields.DateTime(description='Data point timestamp'),
-        'value': fields.Float(description='Metric value'),
-        'status': fields.String(description='Status color based on thresholds')
+    # Memory info model
+    memory_info_model = api.model('MemoryInfo', {
+        'total': fields.Float(description='Total RAM in GB'),
+        'available': fields.Float(description='Available RAM in GB'),
+        'used': fields.Float(description='Used RAM in GB'),
+        'free': fields.Float(description='Free RAM in GB'),
+        'percent_used': fields.Float(description='Percentage of RAM used'),
+        'swap_total': fields.Float(description='Total swap in GB'),
+        'swap_used': fields.Float(description='Used swap in GB'),
+        'swap_percent': fields.Float(description='Percentage of swap used')
     })
 
-    # Heatmap response model
-    heatmap_model = api.model('Heatmap', {
-        'process_name': fields.String(description='Process name'),
-        'metric_type': fields.String(description='Type of metric (cpu/memory)'),
-        'time_range': fields.String(description='Time range of data'),
-        'interval': fields.String(description='Data aggregation interval'),
-        'thresholds': fields.Raw(description='Color thresholds for values'),
-        'data': fields.List(fields.Nested(heatmap_point_model))
+    # Network info model
+    network_stats_model = api.model('NetworkStats', {
+        'interface': fields.String(description='Network interface name'),
+        'bytes_sent': fields.Float(description='Total bytes sent'),
+        'bytes_recv': fields.Float(description='Total bytes received'),
+        'packets_sent': fields.Integer(description='Packets sent'),
+        'packets_recv': fields.Integer(description='Packets received'),
+        'errors_in': fields.Integer(description='Input errors'),
+        'errors_out': fields.Integer(description='Output errors')
     })
 
-    # Historical metrics model
-    historical_metrics_model = api.model('HistoricalMetrics', {
-        'process_name': fields.String(description='Process name'),
+    # Host info model
+    host_info_model = api.model('HostInfo', {
+        'hostname': fields.String(description='Server hostname'),
+        'os': fields.String(description='Operating system'),
+        'uptime': fields.Integer(description='System uptime in seconds'),
+        'boot_time': fields.DateTime(description='System boot time')
+    })
+
+    # Complete host metrics model
+    host_metrics_model = api.model('HostMetrics', {
+        'timestamp': fields.DateTime(description='Metrics timestamp'),
+        'host_info': fields.Nested(host_info_model),
+        'cpu': fields.Nested(cpu_info_model),
+        'memory': fields.Nested(memory_info_model),
+        'disks': fields.List(fields.Nested(disk_info_model)),
+        'network': fields.List(fields.Nested(network_stats_model))
+    })
+
+    # Historical host metrics model
+    historical_host_metrics_model = api.model('HistoricalHostMetrics', {
         'start_time': fields.DateTime(description='Start of time range'),
         'end_time': fields.DateTime(description='End of time range'),
         'interval': fields.String(description='Data aggregation interval'),
         'metrics': fields.Raw(description='Time series metrics data'),
-        'statistics': fields.Raw(description='Statistical summary')
+        'summary': fields.Raw(description='Statistical summary')
     })
 
-    # Add to existing models
-    base_models = {
-        'monit': monit_model,
-        'error': error_model,
-        'status': api.model('ProcessStatus', {
-            'pid': fields.Integer(description='Process ID'),
-            'name': fields.String(description='Process name'),
-            'pm_id': fields.Integer(description='PM2 ID'),
-            'monit': fields.Nested(monit_model),
-            'status': fields.String(description='Process status'),
-            'uptime': fields.Integer(description='Process uptime in seconds'),
-            'restart_time': fields.Integer(description='Number of restarts'),
-            'unstable_restarts': fields.Integer(description='Number of unstable restarts'),
-            'created_at': fields.DateTime(description='Process creation timestamp'),
-            'errors': fields.List(fields.Nested(error_model))
-        }),
-        'metrics': api.model('ProcessMetrics', {
-            'process_name': fields.String(description='Process name'),
-            'time_range': fields.String(description='Time range of metrics'),
-            'metrics': fields.Raw(description='Process metrics data'),
-            'summary': fields.Raw(description='Metrics summary')
-        }),
-        'heatmap': heatmap_model,
-        'historical': historical_metrics_model
+    return {
+        'disk_info': disk_info_model,
+        'cpu_info': cpu_info_model,
+        'memory_info': memory_info_model,
+        'network_stats': network_stats_model,
+        'host_info': host_info_model,
+        'host_metrics': host_metrics_model,
+        'historical_host': historical_host_metrics_model
     }
-
-    return base_models
