@@ -44,16 +44,16 @@ def ensure_venv():
 ensure_venv()
 
 def create_app():
-    """Create and configure the Flask application"""
     app = Flask(__name__)
     app.wsgi_app = ProxyFix(app.wsgi_app)
     
+    # Load config and setup logging
     config = Config()
     logger = setup_logging(config)
     
     # Setup database
     from core.database import setup_database
-    setup_database(config)
+    setup_database(config, logger)
     
     
     api = Api(app, 

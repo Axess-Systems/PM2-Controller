@@ -1,5 +1,65 @@
 # core/database.py
 
+import sqlite3
+import logging
+
+def setup_database(config, logger):
+    """Initialize all database tables"""
+    conn = None
+    try:
+        conn = sqlite3.connect(config.DB_PATH)
+        cursor = conn.cursor()
+
+        # Set up different types of tables
+        setup_process_monitoring_tables(conn, cursor)
+        setup_host_monitoring_tables(conn, cursor)
+
+        logger.info("Database initialization completed successfully")
+
+    except Exception as e:
+        logger.error(f"Database setup failed: {str(e)}")
+        if conn:
+            conn.rollback()
+        raise
+    finally:
+        if conn:
+            conn.close()
+
+def setup_process_monitoring_tables(conn, cursor):
+    """Set up database tables for process monitoring"""
+    
+    # Service status table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS service_status (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            service_name TEXT,
+            timestamp TEXT,
+            status INTEGER,
+            cpu_usage REAL,
+            memory_usage REAL,
+            has_error BOOLEAN DEFAULT 0,
+            has_warning BOOLEAN DEFAULT 0
+        )
+    ''')
+
+    # Create index
+    cursor.execute('''
+        CREATE INDEX IF NOT EXISTS idx_service_status_timestamp 
+        ON service_status(timestamp)
+    ''')
+
+    # Create cleanup trigger
+    cursor.execute('''
+        CREATE TRIGGER IF NOT EXISTS cleanup_old_service_status
+        AFTER INSERT ON service_status
+        BEGIN
+            DELETE FROM service_status 
+            WHERE timestamp <= datetime('now', '-30 days');
+        END
+    ''')
+
+    conn.commit()
+
 def setup_host_monitoring_tables(conn, cursor):
     """Set up database tables for host monitoring"""
     
@@ -95,5 +155,4 @@ def setup_host_monitoring_tables(conn, cursor):
         END
     ''')
 
-    # Commit changes
     conn.commit()
