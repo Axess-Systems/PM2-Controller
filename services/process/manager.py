@@ -544,7 +544,64 @@ class ProcessManager:
         except Exception as e:
             self.logger.error(f"Failed to update config for {name}: {str(e)}", exc_info=True)
             raise PM2CommandError(f"Config update failed: {str(e)}")
-    
-      
-   
+        
+    def log_status(self):
+        """Log current status of PM2 processes"""
+        try:
+            processes = self.pm2_service.list_processes()
+            if not processes:
+                self.logger.warning("No processes found to log")
+                return
+
+            conn = sqlite3.connect(self.config.DB_PATH)
+            cursor = conn.cursor()
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+            for process in processes:
+                try:
+                    service_name = process.get("name", "Unknown")
+                    pm2_env = process.get("pm2_env", {})
+                    monit = process.get("monit", {})
+                    
+                    status_str = pm2_env.get("status", "stopped")
+                    cpu_usage = monit.get("cpu", 0.0)
+                    memory_usage = monit.get("memory", 0.0) / (1024 * 1024)  # Convert to MB
+                    
+                    # Determine status
+                    has_error = status_str == "errored"
+                    has_warning = status_str == "stopping" or status_str == "launching"
+                    status_code = self._determine_status_code(status_str, has_error, has_warning)
+
+                    cursor.execute('''
+                        INSERT INTO service_status 
+                        (service_name, timestamp, status, cpu_usage, memory_usage, has_error, has_warning)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        service_name, timestamp, status_code, cpu_usage, memory_usage,
+                        1 if has_error else 0, 1 if has_warning else 0
+                    ))
+                    
+                except Exception as e:
+                    self.logger.error(f"Error logging process {service_name}: {str(e)}")
+                    continue
+
+            conn.commit()
+            self.logger.debug(f"Successfully logged status for {len(processes)} processes")
+                
+        except Exception as e:
+            self.logger.error(f"Error in log_status: {str(e)}")
+        finally:
+            if 'conn' in locals():
+                conn.close()
+
+    def _determine_status_code(self, status_str, has_error, has_warning):
+        """Determine numeric status code from process state"""
+        if status_str == "stopped":
+            return 0
+        elif has_error:
+            return 3
+        elif has_warning:
+            return 1
+        return 2    
+
     
