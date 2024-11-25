@@ -8,5 +8,4 @@ jsonschema==4.20.0
 gunicorn==21.2.0
 pm2
 requests
-psutil
-sqlite3
+psutil==5.9.6

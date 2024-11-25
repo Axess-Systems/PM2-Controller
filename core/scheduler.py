@@ -15,6 +15,7 @@ class MonitoringScheduler:
         self.cleanup_thread = None
         self.host_thread = None
 
+
     def init_scheduler(self):
         """Initialize monitoring threads with configurable intervals"""
         try:
@@ -92,7 +93,6 @@ class MonitoringScheduler:
             time.sleep(self.config.SCHEDULER_CLEANUP_INTERVAL)
 
     def _cleanup_old_data(self):
-        """Clean up old monitoring data"""
         conn = None
         try:
             conn = sqlite3.connect(self.config.DB_PATH)
@@ -107,7 +107,6 @@ class MonitoringScheduler:
                 )
             
             conn.commit()
-            self.logger.info(f"Cleaned up monitoring data older than {retention_days} days")
             
         except Exception as e:
             self.logger.error(f"Error during data cleanup: {str(e)}")
