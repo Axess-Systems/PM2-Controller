@@ -54,8 +54,12 @@ def create_app():
     logger = setup_logging(config)
     
     # Setup database
-    db_connection = setup_database(config)
-    logger.info("Database initialized successfully")
+    try:
+        setup_database(config, logger)
+        logger.info("Database setup completed")
+    except Exception as e:
+        logger.error(f"Database setup failed: {str(e)}")
+        raise
     
     # Initialize API
     api = Api(app, 
@@ -93,15 +97,14 @@ def create_app():
         
         return response
     
-    # Initialize services with database connection
+    # Initialize services
     services = {
         'pm2_service': PM2Service(config, logger),
         'process_manager': ProcessManager(config, logger),
         'log_manager': LogManager(config, logger),
         'host_monitor': HostMonitor(config, logger),
         'logger': logger,
-        'config': config,
-        'db_connection': db_connection
+        'config': config
     }
     
     # Create namespaces
@@ -132,7 +135,7 @@ def create_app():
     create_log_routes(namespaces['logs'], services)
     create_host_routes(namespaces['host'], services)
 
-    # Initialize and start monitoring scheduler
+    # Initialize scheduler
     scheduler = MonitoringScheduler(config, services, logger)
     try:
         scheduler.init_scheduler()
@@ -144,32 +147,13 @@ def create_app():
     @app.teardown_appcontext
     def cleanup(exception=None):
         """Cleanup on application shutdown"""
-        # Shutdown scheduler if it exists
         if hasattr(app, 'scheduler'):
             try:
                 app.scheduler.shutdown()
             except Exception as e:
                 logger.error(f"Error shutting down scheduler: {str(e)}")
-        
-        # Close database connections
-        try:
-            if db_connection:
-                db_connection.close_all()
-        except Exception as e:
-            logger.error(f"Error closing database connections: {str(e)}")
-
-    @app.errorhandler(Exception)
-    def handle_error(e):
-        """Global error handler"""
-        logger.error(f"Unhandled exception: {str(e)}", exc_info=True)
-        return {
-            'error': str(e),
-            'error_type': type(e).__name__,
-            'timestamp': datetime.now().isoformat()
-        }, 500
 
     return app
-
 
 application = create_app()
 

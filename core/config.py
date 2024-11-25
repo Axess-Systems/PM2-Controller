@@ -9,7 +9,7 @@ class Config:
         # Server Configuration
         self.PORT = int(os.environ.get('PORT', 5000))
         self.HOST = os.environ.get('HOST', '0.0.0.0')
-        self.DEBUG = True  # Force debug mode on
+        self.DEBUG = False  # Force debug mode on
         
         # Logging Configuration
         self.LOG_LEVEL = 'DEBUG'  # Force debug logging
