@@ -29,6 +29,15 @@ class Config:
         self.PM2_CONFIG_DIR = Path('/home/pm2/pm2-configs')
         self.PYTHON_WRAPPER_DIR = Path('/home/pm2/pm2-configs')
         
+        # Scheduler intervals (in seconds)
+        self.SCHEDULER_PROCESS_INTERVAL = int(os.getenv('SCHEDULER_PROCESS_INTERVAL', 60))  # 1 minute
+        self.SCHEDULER_HOST_INTERVAL = int(os.getenv('SCHEDULER_HOST_INTERVAL', 60))       # 1 minute
+        self.SCHEDULER_CLEANUP_INTERVAL = int(os.getenv('SCHEDULER_CLEANUP_INTERVAL', 3600)) # 1 hour
+        
+        # Monitoring settings
+        self.MONITORING_RETENTION_DAYS = int(os.getenv('MONITORING_RETENTION_DAYS', 30))
+        self.MONITORING_MAX_POINTS = int(os.getenv('MONITORING_MAX_POINTS', 10000))
+        
         self._create_required_directories()
     
     def _create_required_directories(self):

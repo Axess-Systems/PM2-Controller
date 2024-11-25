@@ -9,14 +9,18 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 from core.config import Config
 from core.logging import setup_logging
+from core.scheduler import MonitoringScheduler
 from services.pm2.service import PM2Service 
 from services.process.manager import ProcessManager
 from services.log_manager import LogManager
+from services.host.monitor import HostMonitor
 from api.models.process import create_api_models
 from api.models.error import create_error_models
+from api.models.host import create_host_models
 from api.routes.processes import create_process_routes
 from api.routes.health import create_health_routes
 from api.routes.logs import create_log_routes
+from api.routes.host import create_host_routes
 
 def ensure_venv():
     """Ensure we're running inside the virtual environment"""
@@ -52,7 +56,7 @@ def create_app():
     api = Api(app, 
         version='1.0', 
         title='PM2 Controller API',
-        description='REST API for controlling PM2 processes',
+        description='REST API for controlling PM2 processes and monitoring system resources',
         doc='/',
         prefix='/api'
     )
@@ -97,12 +101,14 @@ def create_app():
     pm2_service = PM2Service(config, logger)
     process_manager = ProcessManager(config, logger)
     log_manager = LogManager(config, logger)
+    host_monitor = HostMonitor(config, logger)
     
     # Create services dict
     services = {
         'pm2_service': pm2_service,
         'process_manager': process_manager,
         'log_manager': log_manager,
+        'host_monitor': host_monitor,
         'logger': logger,
         'config': config
     }
@@ -111,21 +117,44 @@ def create_app():
     health_ns = api.namespace('health', description='Health checks')
     processes_ns = api.namespace('processes', description='PM2 process operations')
     logs_ns = api.namespace('logs', description='Process logs operations')
+    host_ns = api.namespace('host', description='Host system monitoring')
     
     # Register models
     models = create_api_models(api)
     for name, model in models.items():
         api.models[name] = model
+    
+    # Register error models
     api.models['error'] = create_error_models(api)
     
+    # Register host monitoring models
+    host_models = create_host_models(api)
+    for name, model in host_models.items():
+        api.models[name] = model
+    
     # Share models with namespaces
-    for ns in [health_ns, processes_ns, logs_ns]:
+    for ns in [health_ns, processes_ns, logs_ns, host_ns]:
         ns.models = api.models
     
     # Register routes with services
     create_process_routes(processes_ns, services)
     create_health_routes(health_ns, services)
     create_log_routes(logs_ns, services)
+    create_host_routes(host_ns, services)
+    
+    # Initialize and start the monitoring scheduler
+    scheduler = MonitoringScheduler(config, services, logger)
+    scheduler.init_scheduler()
+    
+    # Add scheduler to app context for proper cleanup
+    app.scheduler = scheduler
+    
+    # Register cleanup on app context teardown
+    @app.teardown_appcontext
+    def cleanup_scheduler(exception=None):
+        scheduler = getattr(app, 'scheduler', None)
+        if scheduler:
+            scheduler.shutdown()
     
     return app
 
@@ -133,10 +162,15 @@ def create_app():
 application = create_app()
 
 if __name__ == '__main__':
-    config = Config()
-    logger = setup_logging(config)
-    logger.info("Starting PM2 Controller API")
-    application.run(
-        host=config.HOST,
-        port=config.PORT,
-    )
+    try:
+        config = Config()
+        logger = setup_logging(config)
+        logger.info("Starting PM2 Controller API with Host Monitoring")
+        application.run(
+            host=config.HOST,
+            port=config.PORT,
+            debug=config.DEBUG
+        )
+    except Exception as e:
+        logger.error(f"Service startup failed: {str(e)}")
+        raise
