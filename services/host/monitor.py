@@ -2,6 +2,7 @@
 
 import psutil
 import platform
+import sqlite3
 from datetime import datetime
 import socket
 from typing import Dict, List

@@ -6,6 +6,7 @@ import logging
 import subprocess
 from pathlib import Path
 from typing import Dict
+import sqlite3
 from datetime import datetime
 
 from core.config import Config

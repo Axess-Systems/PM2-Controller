@@ -29,6 +29,7 @@ class Config:
         self.PM2_CONFIG_DIR = Path('/home/pm2/pm2-configs')
         self.PYTHON_WRAPPER_DIR = Path('/home/pm2/pm2-configs')
         
+        self.DB_PATH = os.getenv('DB_PATH', 'monitoring.db')
         # Scheduler intervals (in seconds)
         self.SCHEDULER_PROCESS_INTERVAL = int(os.getenv('SCHEDULER_PROCESS_INTERVAL', 60))  # 1 minute
         self.SCHEDULER_HOST_INTERVAL = int(os.getenv('SCHEDULER_HOST_INTERVAL', 60))       # 1 minute
