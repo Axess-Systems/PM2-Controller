@@ -70,7 +70,10 @@ class ProcessManager:
             
             # Handle cron pattern - only include if it's a valid pattern
             cron_value = config_data.get('cron')
-            cron_config = f'cron_restart: "{cron_value}",' if cron_value and cron_value.strip() and cron_value.lower() != 'null' else ''
+            if cron_value and cron_value.strip() and re.match(r'^(\S+\s+){4,5}\S+$', cron_value):
+                cron_config = f'cron_restart: "{cron_value}",'
+            else:
+                cron_config = ''
             
             config_content = f'''// Process Configuration
     const processName = '{name}';
