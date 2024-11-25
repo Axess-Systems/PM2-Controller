@@ -4,6 +4,7 @@ import psutil
 import platform
 import socket
 import os
+import sqlite3
 from datetime import datetime
 import logging
 from typing import Dict, List
@@ -12,6 +13,82 @@ class HostMonitor:
     def __init__(self, config, logger: logging.Logger):
         self.config = config
         self.logger = logger
+
+    def log_metrics(self):
+        """Log current host metrics to database"""
+        conn = None
+        try:
+            metrics = self.get_host_details()
+            conn = sqlite3.connect(self.config.DB_PATH)
+            cursor = conn.cursor()
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+            # Log CPU and memory metrics
+            cursor.execute('''
+                INSERT INTO host_metrics (
+                    timestamp, cpu_percent, cpu_count, load_avg_1m, load_avg_5m, load_avg_15m,
+                    memory_total, memory_used, memory_percent, swap_total, swap_used, swap_percent
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                timestamp,
+                metrics['cpu']['usage_percent'],
+                metrics['cpu']['cores_logical'],
+                metrics['cpu']['load_avg_1m'],
+                metrics['cpu']['load_avg_5m'],
+                metrics['cpu']['load_avg_15m'],
+                metrics['memory']['total'],
+                metrics['memory']['used'],
+                metrics['memory']['percent_used'],
+                metrics['memory']['swap_total'],
+                metrics['memory']['swap_used'],
+                metrics['memory']['swap_percent']
+            ))
+
+            # Log disk metrics
+            for disk in metrics['disks']:
+                cursor.execute('''
+                    INSERT INTO disk_metrics (
+                        timestamp, device, total, used, free, percent_used, mount_point
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    timestamp,
+                    disk['device'],
+                    disk['total_size'],
+                    disk['used'],
+                    disk['free'],
+                    disk['percent_used'],
+                    disk['mount_point']
+                ))
+
+            # Log network metrics
+            for net in metrics['networks']:
+                if net['name'] != 'lo':  # Skip loopback
+                    cursor.execute('''
+                        INSERT INTO network_metrics (
+                            timestamp, interface, bytes_sent, bytes_recv,
+                            packets_sent, packets_recv, errors_in, errors_out
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        timestamp,
+                        net['name'],
+                        net.get('bytes_sent', 0),
+                        net.get('bytes_recv', 0),
+                        net.get('packets_sent', 0),
+                        net.get('packets_recv', 0),
+                        net.get('errors_in', 0),
+                        net.get('errors_out', 0)
+                    ))
+
+            conn.commit()
+            self.logger.debug(f"Host metrics logged successfully at {timestamp}")
+
+        except Exception as e:
+            self.logger.error(f"Error logging host metrics: {str(e)}")
+            if conn:
+                conn.rollback()
+        finally:
+            if conn:
+                conn.close()
 
     def get_host_details(self) -> Dict:
         """Get comprehensive host system information"""
@@ -76,16 +153,17 @@ class HostMonitor:
         disks = []
         for partition in psutil.disk_partitions():
             try:
-                usage = psutil.disk_usage(partition.mountpoint)
-                disks.append({
-                    'device': partition.device,
-                    'mount_point': partition.mountpoint,
-                    'fs_type': partition.fstype,
-                    'total_size': usage.total / (1024**3),  # Convert to GB
-                    'used': usage.used / (1024**3),
-                    'free': usage.free / (1024**3),
-                    'percent_used': usage.percent
-                })
+                if partition.fstype and partition.mountpoint not in ['/snap', '/boot']:
+                    usage = psutil.disk_usage(partition.mountpoint)
+                    disks.append({
+                        'device': partition.device,
+                        'mount_point': partition.mountpoint,
+                        'fs_type': partition.fstype,
+                        'total_size': usage.total / (1024**3),  # Convert to GB
+                        'used': usage.used / (1024**3),
+                        'free': usage.free / (1024**3),
+                        'percent_used': usage.percent
+                    })
             except (PermissionError, OSError):
                 continue
         return disks
