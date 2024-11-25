@@ -9,3 +9,4 @@ gunicorn==21.2.0
 pm2
 requests
 psutil
+sqlite3
