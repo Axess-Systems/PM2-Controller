@@ -273,5 +273,26 @@ def create_host_routes(namespace, services):
             except Exception as e:
                 self.logger.error(f"Error getting system alerts: {str(e)}")
                 namespace.abort(500, f"Internal server error: {str(e)}")
+    @namespace.route('/details')
+    class HostDetails(Resource):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.host_monitor = services['host_monitor']
+            self.logger = services['logger']
+
+        @namespace.doc(
+            responses={
+                200: 'Success',
+                500: 'Internal server error'
+            }
+        )
+        @namespace.marshal_with(namespace.models['host_info'])
+        def get(self):
+            """Get detailed host system information"""
+            try:
+                return self.host_monitor.get_host_details()
+            except Exception as e:
+                self.logger.error(f"Error getting host details: {str(e)}")
+                namespace.abort(500, f"Internal server error: {str(e)}")
 
     return None              
