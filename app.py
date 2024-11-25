@@ -44,18 +44,19 @@ def ensure_venv():
 ensure_venv()
 
 def create_app():
+    """Create and configure the Flask application"""
     app = Flask(__name__)
     app.wsgi_app = ProxyFix(app.wsgi_app)
     
-    # Load config and setup logging
+    # Load configuration and setup logging
     config = Config()
     logger = setup_logging(config)
     
     # Setup database
-    from core.database import setup_database
-    setup_database(config, logger)
+    db_connection = setup_database(config)
+    logger.info("Database initialized successfully")
     
-    
+    # Initialize API
     api = Api(app, 
         version='1.0', 
         title='PM2 Controller API',
@@ -64,6 +65,7 @@ def create_app():
         prefix='/api'
     )
     
+    # Configure CORS
     CORS(app, resources={
         r"/*": {
             "origins": "*",
@@ -90,18 +92,18 @@ def create_app():
         
         return response
     
-    config = Config()
-    logger = setup_logging(config)
-    
+    # Initialize services with database connection
     services = {
         'pm2_service': PM2Service(config, logger),
         'process_manager': ProcessManager(config, logger),
         'log_manager': LogManager(config, logger),
         'host_monitor': HostMonitor(config, logger),
         'logger': logger,
-        'config': config
+        'config': config,
+        'db_connection': db_connection
     }
     
+    # Create namespaces
     namespaces = {
         'health': api.namespace('health', description='Health checks'),
         'processes': api.namespace('processes', description='PM2 process operations'),
@@ -109,6 +111,7 @@ def create_app():
         'host': api.namespace('host', description='Host system monitoring')
     }
     
+    # Register models
     models = {
         **create_api_models(api),
         'error': create_error_models(api),
@@ -118,25 +121,54 @@ def create_app():
     for name, model in models.items():
         api.models[name] = model
     
+    # Share models with namespaces
     for ns in namespaces.values():
         ns.models = api.models
     
+    # Register routes
     create_process_routes(namespaces['processes'], services)
     create_health_routes(namespaces['health'], services)
     create_log_routes(namespaces['logs'], services)
     create_host_routes(namespaces['host'], services)
 
-    # Initialize scheduler
+    # Initialize and start monitoring scheduler
     scheduler = MonitoringScheduler(config, services, logger)
-    scheduler.init_scheduler()
-    app.scheduler = scheduler
+    try:
+        scheduler.init_scheduler()
+        app.scheduler = scheduler
+    except Exception as e:
+        logger.error(f"Failed to initialize scheduler: {str(e)}")
+        # Continue running the app even if scheduler fails
 
     @app.teardown_appcontext
     def cleanup(exception=None):
+        """Cleanup on application shutdown"""
+        # Shutdown scheduler if it exists
         if hasattr(app, 'scheduler'):
-            app.scheduler.shutdown()
+            try:
+                app.scheduler.shutdown()
+            except Exception as e:
+                logger.error(f"Error shutting down scheduler: {str(e)}")
+        
+        # Close database connections
+        try:
+            if db_connection:
+                db_connection.close_all()
+        except Exception as e:
+            logger.error(f"Error closing database connections: {str(e)}")
+
+    @app.errorhandler(Exception)
+    def handle_error(e):
+        """Global error handler"""
+        logger.error(f"Unhandled exception: {str(e)}", exc_info=True)
+        return {
+            'error': str(e),
+            'error_type': type(e).__name__,
+            'timestamp': datetime.now().isoformat()
+        }, 500
 
     return app
+
 
 application = create_app()
 

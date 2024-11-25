@@ -2,126 +2,154 @@
 
 import threading
 import time
-import sqlite3
+import logging
+import queue
 from datetime import datetime
+from typing import Dict
+
+class MonitoringTask(threading.Thread):
+    def __init__(self, name: str, interval: int, func, logger: logging.Logger):
+        super().__init__()
+        self.name = name
+        self.interval = interval
+        self.func = func
+        self.logger = logger
+        self.stop_event = threading.Event()
+        self.daemon = True  # Make thread daemonic so it exits when main thread exits
+
+    def run(self):
+        self.logger.info(f"Starting {self.name} task with interval {self.interval}s")
+        while not self.stop_event.is_set():
+            try:
+                self.func()
+            except Exception as e:
+                self.logger.error(f"Error in {self.name} task: {str(e)}")
+            time.sleep(self.interval)
+
+    def stop(self):
+        self.logger.info(f"Stopping {self.name} task")
+        self.stop_event.set()
 
 class MonitoringScheduler:
     def __init__(self, config, services, logger):
         self.config = config
         self.services = services
         self.logger = logger
-        self.stop_flag = threading.Event()
-        self.monitoring_thread = None
-        self.cleanup_thread = None
-        self.host_thread = None
-
+        self.tasks: Dict[str, MonitoringTask] = {}
+        self.error_queue = queue.Queue()  # Queue to hold errors from background tasks
 
     def init_scheduler(self):
-        """Initialize monitoring threads with configurable intervals"""
+        """Initialize and start monitoring tasks"""
         try:
-            # Process monitoring thread
-            self.monitoring_thread = threading.Thread(
-                target=self._run_interval,
-                args=(
-                    self.services['process_manager'].log_status,
-                    self.config.SCHEDULER_PROCESS_INTERVAL,
-                    'process monitoring'
-                )
+            # Process monitoring task
+            self.tasks['process'] = MonitoringTask(
+                name='Process Monitor',
+                interval=self.config.SCHEDULER_PROCESS_INTERVAL,
+                func=self._process_monitor_task,
+                logger=self.logger
             )
-            self.monitoring_thread.daemon = True
-            self.monitoring_thread.start()
 
-            # Host monitoring thread
-            self.host_thread = threading.Thread(
-                target=self._run_interval,
-                args=(
-                    self.services['host_monitor'].log_metrics,
-                    self.config.SCHEDULER_HOST_INTERVAL,
-                    'host monitoring'
-                )
+            # Host monitoring task
+            self.tasks['host'] = MonitoringTask(
+                name='Host Monitor',
+                interval=self.config.SCHEDULER_HOST_INTERVAL,
+                func=self._host_monitor_task,
+                logger=self.logger
             )
-            self.host_thread.daemon = True
-            self.host_thread.start()
 
-            # Cleanup thread
-            self.cleanup_thread = threading.Thread(
-                target=self._run_interval,
-                args=(
-                    self._cleanup_old_data,
-                    self.config.SCHEDULER_CLEANUP_INTERVAL,
-                    'data cleanup'
-                )
+            # Data cleanup task
+            self.tasks['cleanup'] = MonitoringTask(
+                name='Data Cleanup',
+                interval=self.config.SCHEDULER_CLEANUP_INTERVAL,
+                func=self._cleanup_task,
+                logger=self.logger
             )
-            self.cleanup_thread.daemon = True
-            self.cleanup_thread.start()
 
-            self.logger.info(
-                f"Scheduler started with intervals - Process: {self.config.SCHEDULER_PROCESS_INTERVAL}s, "
-                f"Host: {self.config.SCHEDULER_HOST_INTERVAL}s"
-            )
+            # Start all tasks
+            for task in self.tasks.values():
+                task.start()
+
+            self.logger.info("Monitoring scheduler initialized successfully")
+
+            # Start error monitoring thread
+            self._start_error_monitor()
 
         except Exception as e:
             self.logger.error(f"Failed to initialize scheduler: {str(e)}")
+            self.shutdown()
             raise
 
-    def _run_interval(self, func, interval, name):
-        """Run a function at specified intervals"""
-        while not self.stop_flag.is_set():
-            try:
-                func()
-            except Exception as e:
-                self.logger.error(f"Error in {name}: {str(e)}")
-            time.sleep(interval)
+    def _process_monitor_task(self):
+        """Wrapper for process monitoring to capture errors"""
+        try:
+            self.services['process_manager'].log_status()
+        except Exception as e:
+            self.error_queue.put(('process_monitor', str(e)))
 
-    def _monitoring_loop(self):
-        """Main monitoring loop"""
-        while not self.stop_flag.is_set():
-            try:
-                self.services['process_manager'].log_status()
-                self.services['host_monitor'].log_metrics()
-            except Exception as e:
-                self.logger.error(f"Monitoring error: {str(e)}")
-            time.sleep(self.config.SCHEDULER_PROCESS_INTERVAL)
+    def _host_monitor_task(self):
+        """Wrapper for host monitoring to capture errors"""
+        try:
+            self.services['host_monitor'].log_metrics()
+        except Exception as e:
+            self.error_queue.put(('host_monitor', str(e)))
 
-    def _cleanup_loop(self):
-        """Cleanup loop"""
-        while not self.stop_flag.is_set():
-            try:
-                self._cleanup_old_data()
-            except Exception as e:
-                self.logger.error(f"Cleanup error: {str(e)}")
-            time.sleep(self.config.SCHEDULER_CLEANUP_INTERVAL)
+    def _cleanup_task(self):
+        """Wrapper for cleanup task to capture errors"""
+        try:
+            self._cleanup_old_data()
+        except Exception as e:
+            self.error_queue.put(('cleanup', str(e)))
 
     def _cleanup_old_data(self):
+        """Clean up old monitoring data"""
         conn = None
         try:
-            conn = sqlite3.connect(self.config.DB_PATH)
+            conn = self.services['db_connection']()
             cursor = conn.cursor()
             retention_days = self.config.MONITORING_RETENTION_DAYS
-            
+
             tables = ['service_status', 'host_metrics', 'disk_metrics', 'network_metrics']
             for table in tables:
                 cursor.execute(
                     f'DELETE FROM {table} WHERE timestamp < datetime("now", ? || " days")',
                     (f'-{retention_days}',)
                 )
-            
+
             conn.commit()
-            
+            self.logger.debug(f"Cleaned up monitoring data older than {retention_days} days")
+
         except Exception as e:
-            self.logger.error(f"Error during data cleanup: {str(e)}")
+            if conn:
+                conn.rollback()
+            raise
         finally:
             if conn:
                 conn.close()
 
+    def _start_error_monitor(self):
+        """Start thread to monitor for errors from background tasks"""
+        def monitor_errors():
+            while True:
+                try:
+                    task_name, error = self.error_queue.get(timeout=1)
+                    self.logger.error(f"Error in {task_name}: {error}")
+                except queue.Empty:
+                    continue
+                except Exception as e:
+                    self.logger.error(f"Error in error monitor: {str(e)}")
+
+        error_thread = threading.Thread(target=monitor_errors, daemon=True)
+        error_thread.start()
+
     def shutdown(self):
         """Shutdown the scheduler gracefully"""
-        try:
-            self.stop_flag.set()
-            if self.monitoring_thread:
-                self.monitoring_thread.join(timeout=5)
-            if self.cleanup_thread:
-                self.cleanup_thread.join(timeout=5)
-            self.logger.info("Scheduler shutdown successfully")
-        except Exception as e:
-            self.logger.error(f"Error during scheduler shutdown: {str(e)}")
+        self.logger.info("Shutting down monitoring scheduler...")
+        for name, task in self.tasks.items():
+            try:
+                task.stop()
+                task.join(timeout=5)  # Give each task 5 seconds to stop
+                if task.is_alive():
+                    self.logger.warning(f"{name} task did not stop gracefully")
+            except Exception as e:
+                self.logger.error(f"Error stopping {name} task: {str(e)}")
+        self.logger.info("Monitoring scheduler shutdown complete")

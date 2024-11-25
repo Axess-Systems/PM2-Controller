@@ -5,14 +5,56 @@ import platform
 import socket
 import os
 import sqlite3
+import threading
+import time
 from datetime import datetime
 import logging
 from typing import Dict, List
+
+class MetricsCollector(threading.Thread):
+    """Background thread for collecting CPU and memory metrics"""
+    def __init__(self, interval: int = 1):
+        super().__init__()
+        self.interval = interval
+        self.daemon = True
+        self._stop_event = threading.Event()
+        self._metrics_lock = threading.Lock()
+        self._latest_metrics = {
+            'cpu_percent': 0,
+            'per_cpu_percent': [],
+            'memory': None,
+            'load_average': psutil.getloadavg()
+        }
+
+    def run(self):
+        while not self._stop_event.is_set():
+            with self._metrics_lock:
+                self._latest_metrics.update({
+                    'cpu_percent': psutil.cpu_percent(interval=None),
+                    'per_cpu_percent': psutil.cpu_percent(interval=None, percpu=True),
+                    'memory': psutil.virtual_memory()._asdict(),
+                    'load_average': psutil.getloadavg()
+                })
+            time.sleep(self.interval)
+
+    def get_metrics(self) -> Dict:
+        with self._metrics_lock:
+            return self._latest_metrics.copy()
+
+    def stop(self):
+        self._stop_event.set()
+        self.join(timeout=2)  # Wait up to 2 seconds for the thread to stop
 
 class HostMonitor:
     def __init__(self, config, logger: logging.Logger):
         self.config = config
         self.logger = logger
+        self.metrics_collector = MetricsCollector()
+        self.metrics_collector.start()
+
+    def __del__(self):
+        if hasattr(self, 'metrics_collector'):
+            self.metrics_collector.stop()
 
     def log_metrics(self):
         """Log current host metrics to database"""
@@ -117,31 +159,36 @@ class HostMonitor:
         return (datetime.now() - datetime.fromtimestamp(psutil.boot_time())).total_seconds()
 
     def get_cpu_info(self) -> Dict:
-        """Get detailed CPU information"""
+        """Get detailed CPU information non-blocking"""
+        current_metrics = self.metrics_collector.get_metrics()
         cpu_freq = psutil.cpu_freq()
+        load_avg = current_metrics['load_average']
+        
         return {
             'cores_physical': psutil.cpu_count(logical=False),
             'cores_logical': psutil.cpu_count(logical=True),
-            'usage_percent': psutil.cpu_percent(interval=1),
-            'per_cpu_percent': psutil.cpu_percent(interval=1, percpu=True),
-            'load_avg_1m': psutil.getloadavg()[0],
-            'load_avg_5m': psutil.getloadavg()[1],
-            'load_avg_15m': psutil.getloadavg()[2],
+            'usage_percent': current_metrics['cpu_percent'],
+            'per_cpu_percent': current_metrics['per_cpu_percent'],
+            'load_avg_1m': load_avg[0],
+            'load_avg_5m': load_avg[1],
+            'load_avg_15m': load_avg[2],
             'frequency_current': cpu_freq.current if cpu_freq else 0,
             'frequency_min': cpu_freq.min if cpu_freq else 0,
             'frequency_max': cpu_freq.max if cpu_freq else 0
         }
 
     def get_memory_info(self) -> Dict:
-        """Get detailed memory information"""
-        mem = psutil.virtual_memory()
+        """Get detailed memory information non-blocking"""
+        current_metrics = self.metrics_collector.get_metrics()
+        mem = current_metrics['memory']
         swap = psutil.swap_memory()
+        
         return {
-            'total': mem.total / (1024**3),  # Convert to GB
-            'available': mem.available / (1024**3),
-            'used': mem.used / (1024**3),
-            'free': mem.free / (1024**3),
-            'percent_used': mem.percent,
+            'total': mem['total'] / (1024**3),  # Convert to GB
+            'available': mem['available'] / (1024**3),
+            'used': mem['used'] / (1024**3),
+            'free': mem['free'] / (1024**3),
+            'percent_used': mem['percent'],
             'swap_total': swap.total / (1024**3),
             'swap_used': swap.used / (1024**3),
             'swap_free': swap.free / (1024**3),

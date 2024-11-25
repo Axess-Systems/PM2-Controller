@@ -1,29 +1,44 @@
 # core/database.py
 
 import sqlite3
-import logging
+import threading
+from typing import Callable
 
-def setup_database(config, logger):
-    """Initialize all database tables"""
-    conn = None
+class DatabaseConnection:
+    def __init__(self, db_path: str):
+        self.db_path = db_path
+        self._local = threading.local()
+
+    def get_connection(self) -> sqlite3.Connection:
+        """Get a thread-local database connection"""
+        if not hasattr(self._local, 'connection'):
+            self._local.connection = sqlite3.connect(self.db_path)
+        return self._local.connection
+
+    def close_all(self):
+        """Close all database connections"""
+        if hasattr(self._local, 'connection'):
+            self._local.connection.close()
+            del self._local.connection
+
+def setup_database(config) -> Callable:
+    """Initialize database and return connection factory"""
+    conn = sqlite3.connect(config.DB_PATH)
     try:
-        conn = sqlite3.connect(config.DB_PATH)
-        cursor = conn.cursor()
-
-        # Set up different types of tables
-        setup_process_monitoring_tables(conn, cursor)
-        setup_host_monitoring_tables(conn, cursor)
-
-        logger.info("Database initialization completed successfully")
-
-    except Exception as e:
-        logger.error(f"Database setup failed: {str(e)}")
-        if conn:
-            conn.rollback()
-        raise
+        setup_tables(conn)
+        return DatabaseConnection(config.DB_PATH).get_connection
     finally:
-        if conn:
-            conn.close()
+        conn.close()
+
+def setup_tables(conn: sqlite3.Connection):
+    """Set up all database tables"""
+    cursor = conn.cursor()
+    
+    # Create tables
+    setup_process_monitoring_tables(conn, cursor)
+    setup_host_monitoring_tables(conn, cursor)
+    
+    conn.commit()
 
 def setup_process_monitoring_tables(conn, cursor):
     """Set up database tables for process monitoring"""
