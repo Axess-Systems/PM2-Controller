@@ -9,6 +9,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 from core.config import Config
 from core.logging import setup_logging
+from core.database import setup_database
 from core.scheduler import MonitoringScheduler
 from services.pm2.service import PM2Service 
 from services.process.manager import ProcessManager
