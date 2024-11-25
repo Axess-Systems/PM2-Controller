@@ -44,12 +44,28 @@ def ensure_venv():
 # Check venv before importing any other modules
 ensure_venv()
 
+class MonitoringThread(threading.Thread):
+    def __init__(self, services, interval=60):
+        super().__init__()
+        self.services = services
+        self.interval = interval
+        self.stop_flag = threading.Event()
+        
+    def run(self):
+        while not self.stop_flag.is_set():
+            try:
+                self.services['process_manager'].log_status()
+                self.services['host_monitor'].log_metrics()
+            except Exception as e:
+                self.services['logger'].error(f"Monitoring error: {str(e)}")
+            time.sleep(self.interval)
+            
+    def stop(self):
+        self.stop_flag.set()
+        
 def create_app():
     """Create and configure the Flask application"""
-    # Initialize Flask app
     app = Flask(__name__)
-    
-    # Enable proxy support
     app.wsgi_app = ProxyFix(app.wsgi_app)
     
     # Initialize API
@@ -61,9 +77,9 @@ def create_app():
         prefix='/api'
     )
     
-    # Configure CORS - single configuration for both API and Swagger UI
+    # Configure CORS
     CORS(app, resources={
-        r"/*": {  # This covers both /api/* and Swagger UI
+        r"/*": {
             "origins": "*",
             "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
             "allow_headers": ["Content-Type", "Authorization"],
@@ -73,90 +89,81 @@ def create_app():
         }
     })
     
-    # Add security headers and ensure single CORS header
     @app.after_request
     def add_security_headers(response):
-        # Remove any existing CORS headers to prevent duplicates
         response.headers.pop('Access-Control-Allow-Origin', None)
         response.headers.pop('Access-Control-Allow-Headers', None)
         response.headers.pop('Access-Control-Allow-Methods', None)
         
-        # Add single CORS header
         response.headers['Access-Control-Allow-Origin'] = '*'
         response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
         response.headers['Access-Control-Allow-Methods'] = 'GET, PUT, POST, DELETE, OPTIONS'
-        
-        # Add security headers
         response.headers['X-Content-Type-Options'] = 'nosniff'
         response.headers['X-Frame-Options'] = 'SAMEORIGIN'
         response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
         
         return response
     
-    # Load configuration and setup logging
+    # Initialize core services
     config = Config()
     logger = setup_logging(config)
     
-    # Initialize services
-    pm2_service = PM2Service(config, logger)
-    process_manager = ProcessManager(config, logger)
-    log_manager = LogManager(config, logger)
-    host_monitor = HostMonitor(config, logger)
+    # Initialize monitoring thread
+    monitoring_thread = MonitoringThread(interval=60)
+    monitoring_thread.daemon = True
     
-    # Create services dict
+    # Initialize services
     services = {
-        'pm2_service': pm2_service,
-        'process_manager': process_manager,
-        'log_manager': log_manager,
-        'host_monitor': host_monitor,
+        'pm2_service': PM2Service(config, logger),
+        'process_manager': ProcessManager(config, logger),
+        'log_manager': LogManager(config, logger),
+        'host_monitor': HostMonitor(config, logger),
         'logger': logger,
-        'config': config
+        'config': config,
+        'monitoring_thread': monitoring_thread
     }
     
+    # Start monitoring
+    monitoring_thread.services = services
+    monitoring_thread.start()
+    
+    # Register cleanup
+    atexit.register(monitoring_thread.stop)
+    
     # Create namespaces
-    health_ns = api.namespace('health', description='Health checks')
-    processes_ns = api.namespace('processes', description='PM2 process operations')
-    logs_ns = api.namespace('logs', description='Process logs operations')
-    host_ns = api.namespace('host', description='Host system monitoring')
+    namespaces = {
+        'health': api.namespace('health', description='Health checks'),
+        'processes': api.namespace('processes', description='PM2 process operations'),
+        'logs': api.namespace('logs', description='Process logs operations'),
+        'host': api.namespace('host', description='Host system monitoring')
+    }
     
     # Register models
-    models = create_api_models(api)
+    models = {
+        **create_api_models(api),
+        'error': create_error_models(api),
+        **create_host_models(api)
+    }
+    
     for name, model in models.items():
         api.models[name] = model
     
-    # Register error models
-    api.models['error'] = create_error_models(api)
-    
-    # Register host monitoring models
-    host_models = create_host_models(api)
-    for name, model in host_models.items():
-        api.models[name] = model
-    
     # Share models with namespaces
-    for ns in [health_ns, processes_ns, logs_ns, host_ns]:
+    for ns in namespaces.values():
         ns.models = api.models
     
-    # Register routes with services
-    create_process_routes(processes_ns, services)
-    create_health_routes(health_ns, services)
-    create_log_routes(logs_ns, services)
-    create_host_routes(host_ns, services)
+    # Register routes
+    create_process_routes(namespaces['processes'], services)
+    create_health_routes(namespaces['health'], services)
+    create_log_routes(namespaces['logs'], services)
+    create_host_routes(namespaces['host'], services)
     
-    # Initialize and start the monitoring scheduler
-    scheduler = MonitoringScheduler(config, services, logger)
-    scheduler.init_scheduler()
-    
-    # Add scheduler to app context for proper cleanup
-    app.scheduler = scheduler
-    
-    # Register cleanup on app context teardown
     @app.teardown_appcontext
-    def cleanup_scheduler(exception=None):
-        scheduler = getattr(app, 'scheduler', None)
-        if scheduler:
-            scheduler.shutdown()
+    def cleanup(exception=None):
+        monitoring_thread.stop()
     
     return app
+
 
 # This is our application for gunicorn
 application = create_app()
