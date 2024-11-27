@@ -2,6 +2,8 @@
 import os
 import sys
 from pathlib import Path
+from api.models.monitoring import create_monitoring_models
+from api.routes.monitoring import create_monitoring_routes
 from flask import Flask
 from flask_restx import Api
 from flask_cors import CORS
@@ -112,12 +114,14 @@ def create_app():
         'health': api.namespace('health', description='Health checks'),
         'processes': api.namespace('processes', description='PM2 process operations'),
         'logs': api.namespace('logs', description='Process logs operations'),
-        'host': api.namespace('host', description='Host system monitoring')
+        'host': api.namespace('host', description='Host system monitoring'),
+        'monitoring': api.namespace('monitoring', description='Process monitoring')
     }
     
     # Register models
     models = {
         **create_api_models(api),
+        **create_monitoring_models(api),
         'error': create_error_models(api),
         **create_host_models(api)
     }
@@ -133,6 +137,7 @@ def create_app():
     create_process_routes(namespaces['processes'], services)
     create_health_routes(namespaces['health'], services)
     create_log_routes(namespaces['logs'], services)
+    create_monitoring_routes(namespaces['monitoring'], services)
     create_host_routes(namespaces['host'], services)
 
     # Initialize scheduler
