@@ -5,7 +5,7 @@ from flask import request
 from flask_restx import Resource
 from core.exceptions import ProcessNotFoundError
 import sqlite3
-
+from typing import Dict, List
 
 def create_monitoring_routes(namespace, services):
     """Create routes for process monitoring"""
