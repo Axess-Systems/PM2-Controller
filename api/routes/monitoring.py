@@ -66,53 +66,91 @@ def create_monitoring_routes(namespace, services):
 
 
 
-        def get_process_metrics(self, process_name, start_time, end_time, interval):
-            """Get process metrics from database"""
-            conn = sqlite3.connect(Config.DB_PATH)
-            try:
-                cursor = conn.cursor()
-                cursor.execute('''
+    def get_process_metrics(self, process_name: str, time_range: int = 72) -> List[Dict]:
+        """Get process metrics with proper time intervals
+        
+        Args:
+            process_name: Name of the process
+            time_range: Hours of data to retrieve (default: 72)
+        """
+        conn = None
+        try:
+            conn = sqlite3.connect(self.config.DB_PATH)
+            cursor = conn.cursor()
+            end_time = datetime.now()
+            start_time = end_time - timedelta(hours=time_range)
+
+            # Query with proper time intervals
+            cursor.execute('''
+                WITH RECURSIVE 
+                TimePoints(time_point) AS (
+                    -- Generate time points at 1-minute intervals
+                    SELECT datetime(?, 'localtime')
+                    UNION ALL
+                    SELECT datetime(time_point, '+1 minute')
+                    FROM TimePoints
+                    WHERE time_point < datetime(?, 'localtime')
+                ),
+                ProcessMetrics AS (
+                    -- Get actual metrics data
                     SELECT 
-                        timestamp,
-                        cpu_usage,
-                        memory_usage,
-                        status,
-                        has_error,
-                        has_warning
-                    FROM service_status 
-                    WHERE service_name = ? 
-                    AND timestamp BETWEEN ? AND ?
-                    ORDER BY timestamp ASC
-                ''', (
-                    process_name,
-                    start_time.strftime('%Y-%m-%d %H:%M:%S'),
-                    end_time.strftime('%Y-%m-%d %H:%M:%S')
-                ))
-                
-                rows = cursor.fetchall()
-                
-                # Format metrics data
-                metrics = {
-                    'timestamps': [],
-                    'cpu': [],
-                    'memory': [],
-                    'status': [],
-                    'errors': [],
-                    'warnings': []
+                        strftime('%Y-%m-%dT%H:%M:00', timestamp) as metric_time,
+                        AVG(cpu_usage) as cpu,
+                        MAX(status) as status,
+                        MAX(has_error) as has_error
+                    FROM service_status
+                    WHERE service_name = ?
+                    AND timestamp BETWEEN datetime(?, 'localtime') AND datetime(?, 'localtime')
+                    GROUP BY metric_time
+                )
+                SELECT 
+                    TimePoints.time_point as timestamp,
+                    COALESCE(ProcessMetrics.cpu, 0) as value,
+                    CASE
+                        WHEN ProcessMetrics.has_error = 1 THEN 'red'
+                        WHEN ProcessMetrics.status = 0 THEN 'gray'
+                        WHEN ProcessMetrics.cpu > 90 THEN 'red'
+                        WHEN ProcessMetrics.cpu > 75 THEN 'orange'
+                        ELSE 'green'
+                    END as status
+                FROM TimePoints
+                LEFT JOIN ProcessMetrics ON TimePoints.time_point = ProcessMetrics.metric_time
+                ORDER BY TimePoints.time_point
+            ''', (
+                start_time.strftime('%Y-%m-%d %H:%M:%S'),
+                end_time.strftime('%Y-%m-%d %H:%M:%S'),
+                process_name,
+                start_time.strftime('%Y-%m-%d %H:%M:%S'),
+                end_time.strftime('%Y-%m-%d %H:%M:%S')
+            ))
+
+            rows = cursor.fetchall()
+            
+            # Format the response
+            metrics = [
+                {
+                    'timestamp': row[0],
+                    'value': float(row[1]) if row[1] is not None else 0.0,
+                    'status': row[2]
                 }
-                
-                for row in rows:
-                    metrics['timestamps'].append(row[0])
-                    metrics['cpu'].append(float(row[1]))
-                    metrics['memory'].append(float(row[2]))
-                    metrics['status'].append(int(row[3]))
-                    metrics['errors'].append(bool(row[4]))
-                    metrics['warnings'].append(bool(row[5]))
-                
-                return metrics
-                
-            finally:
+                for row in rows
+            ]
+
+            return {
+                'process_name': process_name,
+                'start_time': start_time.isoformat(),
+                'end_time': end_time.isoformat(),
+                'interval': '1 minute',
+                'data': metrics
+            }
+
+        except Exception as e:
+            self.logger.error(f"Error getting metrics for {process_name}: {str(e)}")
+            raise
+        finally:
+            if conn:
                 conn.close()
+
 
         def calculate_metrics_summary(self, metrics):
             """Calculate summary statistics for metrics"""
